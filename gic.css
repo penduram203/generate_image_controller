@@ -1,4 +1,4 @@
-/* 念のため、画像生成メッセージを非表示にする（JSが間に合わない場合の保険） */
-.mes:has(.mes_img[data-generation-type="6"]) {
+/* 生成画像を含むメッセージを丸ごと非表示にする */
+.mes:has(.mes_media_container .mes_img) {
     display: none !important;
 }
