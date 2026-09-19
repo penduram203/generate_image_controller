@@ -1,1 +1,9 @@
-test3
+{
+  "display_name": "generate_image_controller",
+  "loading_order": 10,
+  "js": "gic.js",
+  "css": "gic.css",
+  "author": "YourName",
+  "version": "1.0.0",
+  "description": "チャットで生成される画像の内容などを制御する"
+}
