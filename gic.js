@@ -1,5 +1,5 @@
-import { eventSource, event_types, saveChat, printMessages } from '../../../script.js';
-import { getContext } from '../../extensions.js';
+import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
+import { getContext } from '../../../extensions.js';
 
 // 画像生成メッセージかどうかを判定
 function isImageGenerationMessage(message) {
