@@ -13,17 +13,10 @@ export async function activate() {
 
         if (!isGeneratedImageMessage(message)) return;
 
-        // chat_metadata.hidden_messages を初期化
-        if (!Array.isArray(context.chat_metadata.hidden_messages)) {
-            context.chat_metadata.hidden_messages = [];
-        }
+        // このメッセージをAIから隠す（ghostアイコンが付く状態にする）
+        message.is_system = true;
 
-        // インデックスを文字列として追加（SillyTavernの内部仕様に合わせる）
-        const indexStr = String(index);
-        if (!context.chat_metadata.hidden_messages.includes(indexStr)) {
-            context.chat_metadata.hidden_messages.push(indexStr);
-        }
-
+        // 変更を保存し、UIを更新
         await saveChat();
         printMessages();
     });
