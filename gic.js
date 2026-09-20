@@ -49,7 +49,8 @@ function createReleaseButton() {
     Object.assign(btn.style, {
         position: 'fixed',
         left: '0',
-        top: '500px',
+        top: '50%',
+        transform: 'translateY(-50%)',
         zIndex: '99999',
         padding: '8px 4px',
         fontSize: '11px',
