@@ -6,6 +6,9 @@ console.log('[GIC] モジュールロード開始');
 // ===== 定数 =====
 const BUTTON_ID = 'gic-release-override-button';
 
+// ===== 状態 =====
+let lastGeneratedImageUrl = null;
+
 // ===== ユーティリティ =====
 
 /**
@@ -25,38 +28,59 @@ function extractImageUrl(message) {
     return media?.url || null;
 }
 
-// ===== 手動解除ボタン =====
+/**
+ * 強制表示モードがアクティブかどうかを取得
+ */
+function isOverrideActive() {
+    return window.ImageDisplayExtension?.isOverride?.() || false;
+}
+
+// ===== ボタンのラベル更新 =====
 
 /**
- * 強制表示解除ボタンを生成して画面左端に配置
- * 位置: 左端, 高さ 500px / 半透明 / 常に表示
+ * 現在のモードに応じてボタンのラベルを更新
+ * - 強制表示モード中 → 「背景生成」
+ * - 通常モード時     → 「事前設定」
+ */
+function updateButtonLabel() {
+    const btn = document.getElementById(BUTTON_ID);
+    if (!btn) return;
+    const newLabel = isOverrideActive() ? '背景生成' : '事前設定';
+    if (btn.textContent !== newLabel) {
+        btn.textContent = newLabel;
+        console.log(`[GIC] ボタンラベル更新: ${newLabel}`);
+    }
+}
+
+// ===== トグルボタン =====
+
+/**
+ * モード切替ボタンを生成して画面左端に配置
+ * 位置: 左端, 最下部から高さ10% / 半透明 / 常に表示
  */
 function createReleaseButton() {
     // 既存ボタンがあれば削除（拡張機能再ロード時対策）
     const existing = document.getElementById(BUTTON_ID);
     if (existing) {
-        console.log('[GIC] 既存の解除ボタンを削除して再作成します');
+        console.log('[GIC] 既存のボタンを削除して再作成します');
         existing.remove();
     }
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
     btn.type = 'button';
-    btn.title = '生成画像の強制表示を解除し、通常のキーワードマッチに戻す';
-    btn.textContent = '解除';
+    btn.title = '強制表示モード（背景生成）と通常モード（事前設定）を切り替える';
+    btn.textContent = '事前設定'; // 初期ラベル（後で updateButtonLabel が正しく上書き）
 
     // インラインスタイルで確実に配置（CSSファイル非依存）
     Object.assign(btn.style, {
         position: 'fixed',
         left: '0',
-        top: '50%',
-        transform: 'translateY(-50%)',
+        bottom: '10%',                        // ← 画面最下部から高さ10%の位置
         zIndex: '99999',
-        padding: '8px 4px',
-        fontSize: '11px',
-        lineHeight: '1.2',
-        writingMode: 'vertical-rl',
-        textOrientation: 'mixed',
+        padding: '6px 12px',
+        fontSize: '12px',
+        // writingMode / textOrientation は指定しない（横書き）
         color: '#ffffff',
         backgroundColor: '#444',
         border: '1px solid #666',
@@ -70,6 +94,7 @@ function createReleaseButton() {
         transition: 'opacity 0.2s ease, background-color 0.2s ease',
         userSelect: 'none',
         outline: 'none',
+        whiteSpace: 'nowrap',
     });
 
     // ホバー時の視覚フィードバック
@@ -82,22 +107,40 @@ function createReleaseButton() {
         btn.style.backgroundColor = '#444';
     });
 
-    // クリックで強制表示を解除
+    // クリックでモードをトグル
     btn.addEventListener('click', () => {
-        if (window.ImageDisplayExtension?.clearOverrideImage) {
-            try {
-                window.ImageDisplayExtension.clearOverrideImage();
-                console.log('[GIC] 手動解除ボタン: 強制表示を解除しました');
-            } catch (e) {
-                console.error('[GIC] 強制表示解除エラー:', e);
+        if (isOverrideActive()) {
+            // 強制表示モード → 通常モードへ
+            if (window.ImageDisplayExtension?.clearOverrideImage) {
+                try {
+                    window.ImageDisplayExtension.clearOverrideImage();
+                    console.log('[GIC] ボタン: 強制表示モード → 通常モードへ切替');
+                } catch (e) {
+                    console.error('[GIC] 解除エラー:', e);
+                }
+            } else {
+                console.warn('[GIC] ImageDisplayExtension.clearOverrideImage が利用できません');
             }
         } else {
-            console.warn('[GIC] ImageDisplayExtension.clearOverrideImage が利用できません');
+            // 通常モード → 強制表示モードへ（最後の生成画像を再表示）
+            if (lastGeneratedImageUrl && window.ImageDisplayExtension?.setOverrideImage) {
+                try {
+                    window.ImageDisplayExtension.setOverrideImage(lastGeneratedImageUrl);
+                    console.log(`[GIC] ボタン: 通常モード → 強制表示モードへ切替 (${lastGeneratedImageUrl})`);
+                } catch (e) {
+                    console.error('[GIC] 強制表示エラー:', e);
+                }
+            } else {
+                console.warn('[GIC] 再表示できる生成画像がまだありません');
+            }
         }
+        // ラベル更新は少し遅延させる（IDE側の状態反映を待つ）
+        setTimeout(updateButtonLabel, 150);
     });
 
     document.body.appendChild(btn);
-    console.log('[GIC] ✅ 解除ボタンを画面左端(top:500px)に配置しました');
+    console.log('[GIC] ✅ トグルボタンを画面左端(bottom:10%)に配置しました');
+    updateButtonLabel();
 }
 
 // ===== イベントハンドラ登録 =====
@@ -118,10 +161,13 @@ function setupMessageListener() {
         // 3) Image Display Extension に背景画像として強制表示を依頼
         if (imageUrl && window.ImageDisplayExtension?.setOverrideImage) {
             try {
+                lastGeneratedImageUrl = imageUrl;
                 const ok = await window.ImageDisplayExtension.setOverrideImage(imageUrl);
                 console.log(ok
                     ? `[GIC] 🖼️ 生成画像を背景に設定: ${imageUrl}`
                     : `[GIC] ⚠️ 背景設定に失敗: ${imageUrl}`);
+                // ラベルを「背景生成」に更新
+                setTimeout(updateButtonLabel, 150);
             } catch (e) {
                 console.error('[GIC] ImageDisplayExtension 連携エラー:', e);
             }
@@ -138,23 +184,26 @@ function setupMessageListener() {
     console.log('[GIC] ✅ MESSAGE_RECEIVED リスナーを登録しました');
 }
 
-// ===== 初期化（activate が呼ばれない環境への対応） =====
+// ===== 初期化 =====
 
 function initializeGIC() {
     console.log('[GIC] 初期化開始');
     createReleaseButton();
     setupMessageListener();
+
+    // 定期的にラベルを同期
+    // IDE側が外部から clearOverrideImage を呼んだ場合や、
+    // 画像生成以外の要因で状態が変わった場合に対応する保険。
+    setInterval(updateButtonLabel, 2000);
 }
 
 // DOMContentLoaded または即時実行
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeGIC);
 } else {
-    // bodyが既に存在する場合は即時実行
     if (document.body) {
         initializeGIC();
     } else {
-        // bodyがまだない場合は少し待つ
         setTimeout(() => {
             if (document.body) {
                 initializeGIC();
@@ -169,7 +218,6 @@ if (document.readyState === 'loading') {
 
 export async function activate() {
     console.log('[GIC] activate() が呼ばれました');
-    // 既に初期化済みでも、ボタンが無ければ再作成
     createReleaseButton();
     console.log('[GIC] ✅ Generate Image Controller: アクティベート完了');
 }
