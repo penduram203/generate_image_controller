@@ -10,6 +10,7 @@ const LABEL_NORMAL   = '事前設定';
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
+const processedMessageKeys = new Set();
 
 // ===== ユーティリティ =====
 
@@ -22,6 +23,15 @@ function extractImageUrl(message) {
     if (!Array.isArray(message?.extra?.media)) return null;
     const media = message.extra.media.find(m => m.source === 'generated');
     return media?.url || null;
+}
+
+/**
+ * メッセージを一意に識別するキーを生成
+ * send_date は一意のタイムスタンプなので優先的に使用
+ */
+function getMessageKey(message) {
+    if (message?.send_date) return message.send_date;
+    return `${message?.name || 'unknown'}_${(message?.mes || '').slice(0, 80)}`;
 }
 
 function isOverrideActive() {
@@ -51,11 +61,60 @@ function setButtonLabel(label) {
     }
 }
 
-// ===== クリック処理本体 =====
+// ===== 生成画像のスキャン（イベント非依存） =====
+
+async function scanForGeneratedImages() {
+    const context = getContext();
+    if (!context?.chat) return;
+
+    // チャットの末尾から未処理の生成画像メッセージを探す
+    for (let i = context.chat.length - 1; i >= 0; i--) {
+        const msg = context.chat[i];
+        if (!isGeneratedImageMessage(msg)) continue;
+
+        const key = getMessageKey(msg);
+        if (processedMessageKeys.has(key)) continue;
+
+        // 未処理の生成画像メッセージを発見
+        processedMessageKeys.add(key);
+        const url = extractImageUrl(msg);
+        console.log(`[GIC] 🔍 未処理の生成画像メッセージを検出 (index=${i}, key=${key})`);
+        console.log(`[GIC] URL: ${url}`);
+
+        if (!url) continue;
+
+        // AIから隠す（ghost状態）
+        if (!msg.is_system) {
+            msg.is_system = true;
+            try {
+                await saveChat();
+                printMessages();
+                console.log('[GIC] メッセージをAI非表示に設定');
+            } catch (e) {
+                console.error('[GIC] saveChat/printMessages エラー:', e);
+            }
+        }
+
+        // IDEに強制表示を依頼
+        lastGeneratedImageUrl = url;
+        if (window.ImageDisplayExtension?.setOverrideImage) {
+            try {
+                await window.ImageDisplayExtension.setOverrideImage(url);
+                console.log(`[GIC] 🖼️ 生成画像を背景に設定: ${url}`);
+                setButtonLabel(LABEL_OVERRIDE);
+            } catch (e) {
+                console.error('[GIC] ImageDisplayExtension エラー:', e);
+            }
+        }
+        break; // 最新の1件のみ処理
+    }
+}
+
+// ===== ボタンのアクション =====
 
 function handleButtonAction() {
     const wasOverride = isOverrideActive();
-    console.log(`[GIC] ボタンアクション発火: 現在=${wasOverride ? '強制表示' : '通常'}, lastUrl=${lastGeneratedImageUrl}`);
+    console.log(`[GIC] ボタンアクション: 現在=${wasOverride ? '強制表示' : '通常'}, lastUrl=${lastGeneratedImageUrl}`);
 
     if (wasOverride) {
         // 強制表示 → 通常モード
@@ -67,13 +126,11 @@ function handleButtonAction() {
             } catch (err) {
                 console.error('[GIC] clearOverrideImage エラー:', err);
             }
-        } else {
-            console.warn('[GIC] clearOverrideImage 利用不可');
         }
     } else {
-        // 通常モード → 強制表示
+        // 通常 → 強制表示
         if (!lastGeneratedImageUrl) {
-            console.warn('[GIC] 再表示できる生成画像がありません');
+            console.warn('[GIC] 再表示できる生成画像がありません。先に画像を生成してください。');
             return;
         }
         if (window.ImageDisplayExtension?.setOverrideImage) {
@@ -84,23 +141,17 @@ function handleButtonAction() {
             } catch (err) {
                 console.error('[GIC] setOverrideImage エラー:', err);
             }
-        } else {
-            console.warn('[GIC] setOverrideImage 利用不可');
         }
     }
 
-    // IDE側の状態と再同期
     setTimeout(syncButtonLabel, 300);
 }
 
-// ===== トグルボタン =====
+// ===== ボタンの生成 =====
 
 function createReleaseButton() {
     const existing = document.getElementById(BUTTON_ID);
-    if (existing) {
-        console.log('[GIC] 既存のボタンを削除');
-        existing.remove();
-    }
+    if (existing) existing.remove();
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
@@ -121,10 +172,8 @@ function createReleaseButton() {
         borderLeft: 'none',
         borderTopRightRadius: '6px',
         borderBottomRightRadius: '6px',
-        borderTopLeftRadius: '0',
-        borderBottomLeftRadius: '0',
         cursor: 'pointer',
-        opacity: '0.16',                 // ← 0.08 から 0.16 に変更
+        opacity: '0.12',
         transition: 'opacity 0.15s ease, background-color 0.15s ease',
         userSelect: 'none',
         outline: 'none',
@@ -133,37 +182,22 @@ function createReleaseButton() {
         touchAction: 'manipulation',
     });
 
-    // ホバー時の視覚フィードバック
     btn.addEventListener('mouseenter', () => {
         btn.style.opacity = '1';
         btn.style.backgroundColor = '#666';
     });
     btn.addEventListener('mouseleave', () => {
-        btn.style.opacity = '0.16';
+        btn.style.opacity = '0.12';
         btn.style.backgroundColor = '#444';
     });
 
-    // クリック視覚フィードバック（一瞬色を変える）
-    const flash = () => {
-        btn.style.backgroundColor = '#0a84ff';
-        setTimeout(() => {
-            btn.style.backgroundColor = (btn.matches(':hover') ? '#666' : '#444');
-        }, 150);
-    };
-
-    // ===== クリック処理 =====
-    // pointerdown と click の両方を登録。pointerdown が先に発火するが、
-    // ダブル発火を防ぐためデバウンス的に 200ms のガードを入れる。
+    // 二重発火防止用のタイムスタンプ
     let lastActionTime = 0;
     const triggerAction = (source) => {
         const now = Date.now();
-        if (now - lastActionTime < 200) {
-            console.log(`[GIC] 連続発火を無視 (${source})`);
-            return;
-        }
+        if (now - lastActionTime < 200) return;
         lastActionTime = now;
         console.log(`[GIC] トリガー: ${source}`);
-        flash();
         handleButtonAction();
     };
 
@@ -180,53 +214,28 @@ function createReleaseButton() {
     }, true);
 
     document.body.appendChild(btn);
-    console.log('[GIC] ✅ トグルボタンを画面左端(bottom:10%)に配置しました');
+    console.log('[GIC] ✅ ボタンを画面左端(bottom:10%)に配置しました');
     syncButtonLabel();
-
-    // デバッグ用：クリック位置に何があるか確認できるようにする
-    setTimeout(() => {
-        const rect = btn.getBoundingClientRect();
-        const topEl = document.elementFromPoint(rect.left + 5, rect.top + rect.height / 2);
-        console.log('[GIC] ボタン位置:', rect);
-        console.log('[GIC] その位置の最前面要素:', topEl);
-        console.log('[GIC] ボタンが最前面か:', topEl === btn);
-    }, 500);
 }
 
-// ===== イベントハンドラ登録 =====
+// ===== イベント登録（保険として複数） =====
 
-function setupMessageListener() {
-    eventSource.on(event_types.MESSAGE_RECEIVED, async (index) => {
-        const context = getContext();
-        const message = context.chat[index];
-
-        if (!isGeneratedImageMessage(message)) return;
-
-        message.is_system = true;
-
-        const imageUrl = extractImageUrl(message);
-
-        if (imageUrl && window.ImageDisplayExtension?.setOverrideImage) {
-            try {
-                lastGeneratedImageUrl = imageUrl;
-                const ok = await window.ImageDisplayExtension.setOverrideImage(imageUrl);
-                console.log(ok
-                    ? `[GIC] 🖼️ 生成画像を背景に設定: ${imageUrl}`
-                    : `[GIC] ⚠️ 背景設定に失敗: ${imageUrl}`);
-                setButtonLabel(LABEL_OVERRIDE);
-            } catch (e) {
-                console.error('[GIC] ImageDisplayExtension 連携エラー:', e);
-            }
-        } else if (!imageUrl) {
-            console.warn('[GIC] ⚠️ 生成画像URLが取得できませんでした');
-        } else {
-            console.warn('[GIC] ⚠️ ImageDisplayExtension が見つかりません');
+function setupListeners() {
+    const safeOn = (type, handler) => {
+        if (type && eventSource?.on) {
+            eventSource.on(type, handler);
         }
+    };
 
-        await saveChat();
-        printMessages();
-    });
-    console.log('[GIC] ✅ MESSAGE_RECEIVED リスナーを登録しました');
+    // 生成画像メッセージを取りこぼさないよう複数イベントを監視
+    safeOn(event_types.MESSAGE_RECEIVED, scanForGeneratedImages);
+    safeOn(event_types.CHARACTER_MESSAGE_RENDERED, scanForGeneratedImages);
+    safeOn(event_types.USER_MESSAGE_RENDERED, scanForGeneratedImages);
+    if (event_types.MESSAGE_UPDATED) safeOn(event_types.MESSAGE_UPDATED, scanForGeneratedImages);
+    if (event_types.MESSAGE_SWIPED) safeOn(event_types.MESSAGE_SWIPED, scanForGeneratedImages);
+    if (event_types.CHAT_CHANGED) safeOn(event_types.CHAT_CHANGED, scanForGeneratedImages);
+
+    console.log('[GIC] ✅ イベントリスナーを登録しました');
 }
 
 // ===== 初期化 =====
@@ -234,9 +243,16 @@ function setupMessageListener() {
 function initializeGIC() {
     console.log('[GIC] 初期化開始');
     createReleaseButton();
-    setupMessageListener();
+    setupListeners();
 
-    setInterval(syncButtonLabel, 2000);
+    // 定期的にラベル同期と未処理画像のスキャン
+    setInterval(() => {
+        syncButtonLabel();
+        scanForGeneratedImages();
+    }, 1500);
+
+    // 初回スキャン
+    scanForGeneratedImages();
 }
 
 if (document.readyState === 'loading') {
@@ -246,11 +262,8 @@ if (document.readyState === 'loading') {
         initializeGIC();
     } else {
         setTimeout(() => {
-            if (document.body) {
-                initializeGIC();
-            } else {
-                document.addEventListener('DOMContentLoaded', initializeGIC);
-            }
+            if (document.body) initializeGIC();
+            else document.addEventListener('DOMContentLoaded', initializeGIC);
         }, 100);
     }
 }
