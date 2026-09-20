@@ -5,8 +5,8 @@ console.log('[GIC] モジュールロード開始');
 
 // ===== 定数 =====
 const BUTTON_ID = 'gic-release-override-button';
-const LABEL_OVERRIDE = '背景生成';   // 強制表示モード時
-const LABEL_NORMAL   = '事前設定';   // 通常モード時
+const LABEL_OVERRIDE = '背景生成';
+const LABEL_NORMAL   = '事前設定';
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
@@ -24,9 +24,6 @@ function extractImageUrl(message) {
     return media?.url || null;
 }
 
-/**
- * 強制表示モードがアクティブかどうかを取得
- */
 function isOverrideActive() {
     try {
         return window.ImageDisplayExtension?.isOverride?.() === true;
@@ -35,9 +32,6 @@ function isOverrideActive() {
     }
 }
 
-/**
- * ボタンのラベルを現在のモードに同期
- */
 function syncButtonLabel() {
     const btn = document.getElementById(BUTTON_ID);
     if (!btn) return;
@@ -48,9 +42,6 @@ function syncButtonLabel() {
     }
 }
 
-/**
- * ボタンのラベルを明示的に設定
- */
 function setButtonLabel(label) {
     const btn = document.getElementById(BUTTON_ID);
     if (!btn) return;
@@ -60,12 +51,54 @@ function setButtonLabel(label) {
     }
 }
 
+// ===== クリック処理本体 =====
+
+function handleButtonAction() {
+    const wasOverride = isOverrideActive();
+    console.log(`[GIC] ボタンアクション発火: 現在=${wasOverride ? '強制表示' : '通常'}, lastUrl=${lastGeneratedImageUrl}`);
+
+    if (wasOverride) {
+        // 強制表示 → 通常モード
+        if (window.ImageDisplayExtension?.clearOverrideImage) {
+            try {
+                window.ImageDisplayExtension.clearOverrideImage();
+                console.log('[GIC] clearOverrideImage() 成功');
+                setButtonLabel(LABEL_NORMAL);
+            } catch (err) {
+                console.error('[GIC] clearOverrideImage エラー:', err);
+            }
+        } else {
+            console.warn('[GIC] clearOverrideImage 利用不可');
+        }
+    } else {
+        // 通常モード → 強制表示
+        if (!lastGeneratedImageUrl) {
+            console.warn('[GIC] 再表示できる生成画像がありません');
+            return;
+        }
+        if (window.ImageDisplayExtension?.setOverrideImage) {
+            try {
+                window.ImageDisplayExtension.setOverrideImage(lastGeneratedImageUrl);
+                console.log(`[GIC] setOverrideImage() 成功: ${lastGeneratedImageUrl}`);
+                setButtonLabel(LABEL_OVERRIDE);
+            } catch (err) {
+                console.error('[GIC] setOverrideImage エラー:', err);
+            }
+        } else {
+            console.warn('[GIC] setOverrideImage 利用不可');
+        }
+    }
+
+    // IDE側の状態と再同期
+    setTimeout(syncButtonLabel, 300);
+}
+
 // ===== トグルボタン =====
 
 function createReleaseButton() {
     const existing = document.getElementById(BUTTON_ID);
     if (existing) {
-        console.log('[GIC] 既存のボタンを削除して再作成します');
+        console.log('[GIC] 既存のボタンを削除');
         existing.remove();
     }
 
@@ -79,7 +112,7 @@ function createReleaseButton() {
         position: 'fixed',
         left: '0',
         bottom: '10%',
-        zIndex: '2147483647',      // 最大値（他のUIより確実に前面）
+        zIndex: '2147483647',
         padding: '6px 12px',
         fontSize: '12px',
         color: '#ffffff',
@@ -91,71 +124,73 @@ function createReleaseButton() {
         borderTopLeftRadius: '0',
         borderBottomLeftRadius: '0',
         cursor: 'pointer',
-        opacity: '0.08',           // ← 非ホバー時はさらに薄く
-        transition: 'opacity 0.2s ease, background-color 0.2s ease',
+        opacity: '0.16',                 // ← 0.08 から 0.16 に変更
+        transition: 'opacity 0.15s ease, background-color 0.15s ease',
         userSelect: 'none',
         outline: 'none',
         whiteSpace: 'nowrap',
-        pointerEvents: 'auto',     // ← クリックを確実に受け取る
+        pointerEvents: 'auto',
+        touchAction: 'manipulation',
     });
 
+    // ホバー時の視覚フィードバック
     btn.addEventListener('mouseenter', () => {
         btn.style.opacity = '1';
         btn.style.backgroundColor = '#666';
     });
     btn.addEventListener('mouseleave', () => {
-        btn.style.opacity = '0.08';
+        btn.style.opacity = '0.16';
         btn.style.backgroundColor = '#444';
     });
 
-    // ===== クリック時のトグル処理 =====
+    // クリック視覚フィードバック（一瞬色を変える）
+    const flash = () => {
+        btn.style.backgroundColor = '#0a84ff';
+        setTimeout(() => {
+            btn.style.backgroundColor = (btn.matches(':hover') ? '#666' : '#444');
+        }, 150);
+    };
+
+    // ===== クリック処理 =====
+    // pointerdown と click の両方を登録。pointerdown が先に発火するが、
+    // ダブル発火を防ぐためデバウンス的に 200ms のガードを入れる。
+    let lastActionTime = 0;
+    const triggerAction = (source) => {
+        const now = Date.now();
+        if (now - lastActionTime < 200) {
+            console.log(`[GIC] 連続発火を無視 (${source})`);
+            return;
+        }
+        lastActionTime = now;
+        console.log(`[GIC] トリガー: ${source}`);
+        flash();
+        handleButtonAction();
+    };
+
+    btn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        triggerAction('pointerdown');
+    }, true);
+
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
-
-        const wasOverride = isOverrideActive();
-        console.log(`[GIC] ボタンクリック: 現在のモード = ${wasOverride ? '強制表示' : '通常'}`);
-        console.log(`[GIC] lastGeneratedImageUrl = ${lastGeneratedImageUrl}`);
-
-        if (wasOverride) {
-            // ---- 強制表示 → 通常モードへ ----
-            if (window.ImageDisplayExtension?.clearOverrideImage) {
-                try {
-                    window.ImageDisplayExtension.clearOverrideImage();
-                    console.log('[GIC] clearOverrideImage() 呼び出し成功');
-                    setButtonLabel(LABEL_NORMAL);   // ← 即座にラベル変更
-                } catch (err) {
-                    console.error('[GIC] clearOverrideImage エラー:', err);
-                }
-            } else {
-                console.warn('[GIC] ImageDisplayExtension.clearOverrideImage が利用できません');
-            }
-        } else {
-            // ---- 通常モード → 強制表示へ ----
-            if (!lastGeneratedImageUrl) {
-                console.warn('[GIC] 再表示できる生成画像がまだありません。先に画像を生成してください。');
-                return;
-            }
-            if (window.ImageDisplayExtension?.setOverrideImage) {
-                try {
-                    window.ImageDisplayExtension.setOverrideImage(lastGeneratedImageUrl);
-                    console.log(`[GIC] setOverrideImage() 呼び出し成功: ${lastGeneratedImageUrl}`);
-                    setButtonLabel(LABEL_OVERRIDE); // ← 即座にラベル変更
-                } catch (err) {
-                    console.error('[GIC] setOverrideImage エラー:', err);
-                }
-            } else {
-                console.warn('[GIC] ImageDisplayExtension.setOverrideImage が利用できません');
-            }
-        }
-
-        // 少し遅延して実際の状態と再同期（IDE側で失敗していた場合の保険）
-        setTimeout(syncButtonLabel, 300);
-    });
+        triggerAction('click');
+    }, true);
 
     document.body.appendChild(btn);
     console.log('[GIC] ✅ トグルボタンを画面左端(bottom:10%)に配置しました');
     syncButtonLabel();
+
+    // デバッグ用：クリック位置に何があるか確認できるようにする
+    setTimeout(() => {
+        const rect = btn.getBoundingClientRect();
+        const topEl = document.elementFromPoint(rect.left + 5, rect.top + rect.height / 2);
+        console.log('[GIC] ボタン位置:', rect);
+        console.log('[GIC] その位置の最前面要素:', topEl);
+        console.log('[GIC] ボタンが最前面か:', topEl === btn);
+    }, 500);
 }
 
 // ===== イベントハンドラ登録 =====
@@ -167,13 +202,10 @@ function setupMessageListener() {
 
         if (!isGeneratedImageMessage(message)) return;
 
-        // 1) AIから隠す
         message.is_system = true;
 
-        // 2) 生成画像URLを取得
         const imageUrl = extractImageUrl(message);
 
-        // 3) IDE に強制表示を依頼
         if (imageUrl && window.ImageDisplayExtension?.setOverrideImage) {
             try {
                 lastGeneratedImageUrl = imageUrl;
@@ -181,7 +213,7 @@ function setupMessageListener() {
                 console.log(ok
                     ? `[GIC] 🖼️ 生成画像を背景に設定: ${imageUrl}`
                     : `[GIC] ⚠️ 背景設定に失敗: ${imageUrl}`);
-                setButtonLabel(LABEL_OVERRIDE);  // ← 生成直後にラベル更新
+                setButtonLabel(LABEL_OVERRIDE);
             } catch (e) {
                 console.error('[GIC] ImageDisplayExtension 連携エラー:', e);
             }
@@ -191,7 +223,6 @@ function setupMessageListener() {
             console.warn('[GIC] ⚠️ ImageDisplayExtension が見つかりません');
         }
 
-        // 4) 保存＆再描画
         await saveChat();
         printMessages();
     });
@@ -205,7 +236,6 @@ function initializeGIC() {
     createReleaseButton();
     setupMessageListener();
 
-    // 2秒ごとにラベルを同期（外部から状態が変わった場合の保険）
     setInterval(syncButtonLabel, 2000);
 }
 
