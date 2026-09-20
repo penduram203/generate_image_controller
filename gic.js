@@ -1,6 +1,8 @@
 import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 
+console.log('[GIC] モジュールロード開始');
+
 // ===== 定数 =====
 const BUTTON_ID = 'gic-release-override-button';
 
@@ -32,7 +34,10 @@ function extractImageUrl(message) {
 function createReleaseButton() {
     // 既存ボタンがあれば削除（拡張機能再ロード時対策）
     const existing = document.getElementById(BUTTON_ID);
-    if (existing) existing.remove();
+    if (existing) {
+        console.log('[GIC] 既存の解除ボタンを削除して再作成します');
+        existing.remove();
+    }
 
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
@@ -81,26 +86,22 @@ function createReleaseButton() {
         if (window.ImageDisplayExtension?.clearOverrideImage) {
             try {
                 window.ImageDisplayExtension.clearOverrideImage();
-                console.log('🖱️ 手動解除ボタン: 強制表示を解除しました');
+                console.log('[GIC] 手動解除ボタン: 強制表示を解除しました');
             } catch (e) {
-                console.error('❌ 強制表示解除エラー:', e);
+                console.error('[GIC] 強制表示解除エラー:', e);
             }
         } else {
-            console.warn('⚠️ ImageDisplayExtension.clearOverrideImage が利用できません');
+            console.warn('[GIC] ImageDisplayExtension.clearOverrideImage が利用できません');
         }
     });
 
     document.body.appendChild(btn);
-    console.log('✅ 強制表示解除ボタンを画面左端(top:500px)に配置しました');
+    console.log('[GIC] ✅ 解除ボタンを画面左端(top:500px)に配置しました');
 }
 
-// ===== 拡張機能のアクティベート =====
+// ===== イベントハンドラ登録 =====
 
-export async function activate() {
-    // 手動解除ボタンを配置
-    createReleaseButton();
-
-    // 画像生成メッセージの受信を監視
+function setupMessageListener() {
     eventSource.on(event_types.MESSAGE_RECEIVED, async (index) => {
         const context = getContext();
         const message = context.chat[index];
@@ -118,21 +119,56 @@ export async function activate() {
             try {
                 const ok = await window.ImageDisplayExtension.setOverrideImage(imageUrl);
                 console.log(ok
-                    ? `🖼️ 生成画像を背景に設定: ${imageUrl}`
-                    : `⚠️ 背景設定に失敗: ${imageUrl}`);
+                    ? `[GIC] 🖼️ 生成画像を背景に設定: ${imageUrl}`
+                    : `[GIC] ⚠️ 背景設定に失敗: ${imageUrl}`);
             } catch (e) {
-                console.error('❌ ImageDisplayExtension 連携エラー:', e);
+                console.error('[GIC] ImageDisplayExtension 連携エラー:', e);
             }
         } else if (!imageUrl) {
-            console.warn('⚠️ 生成画像URLが取得できませんでした');
+            console.warn('[GIC] ⚠️ 生成画像URLが取得できませんでした');
         } else {
-            console.warn('⚠️ ImageDisplayExtension が見つかりません。先にロードされているか確認してください。');
+            console.warn('[GIC] ⚠️ ImageDisplayExtension が見つかりません。先にロードされているか確認してください。');
         }
 
         // 4) 保存＆再描画
         await saveChat();
         printMessages();
     });
+    console.log('[GIC] ✅ MESSAGE_RECEIVED リスナーを登録しました');
+}
 
-    console.log('✅ Generate Image Controller: アクティベート完了');
+// ===== 初期化（activate が呼ばれない環境への対応） =====
+
+function initializeGIC() {
+    console.log('[GIC] 初期化開始');
+    createReleaseButton();
+    setupMessageListener();
+}
+
+// DOMContentLoaded または即時実行
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeGIC);
+} else {
+    // bodyが既に存在する場合は即時実行
+    if (document.body) {
+        initializeGIC();
+    } else {
+        // bodyがまだない場合は少し待つ
+        setTimeout(() => {
+            if (document.body) {
+                initializeGIC();
+            } else {
+                document.addEventListener('DOMContentLoaded', initializeGIC);
+            }
+        }, 100);
+    }
+}
+
+// ===== activate フック（SillyTavernが呼ぶ場合） =====
+
+export async function activate() {
+    console.log('[GIC] activate() が呼ばれました');
+    // 既に初期化済みでも、ボタンが無ければ再作成
+    createReleaseButton();
+    console.log('[GIC] ✅ Generate Image Controller: アクティベート完了');
 }
