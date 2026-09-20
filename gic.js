@@ -58,28 +58,35 @@ async function scanForGeneratedImages() {
         console.log(`[GIC] 🔍 未処理の生成画像メッセージを検出 (index=${i}, url=${url})`);
         if (!url) continue;
 
+        // 1) AIから隠す（削除前の安全策）
         if (!msg.is_system) {
             msg.is_system = true;
-            try {
-                await saveChat();
-                printMessages();
-            } catch (e) {
-                console.error('[GIC] saveChat/printMessages エラー:', e);
-            }
         }
 
+        // 2) IDEに強制表示を依頼
         lastGeneratedImageUrl = url;
         if (window.ImageDisplayExtension?.setOverrideImage) {
             try {
                 await window.ImageDisplayExtension.setOverrideImage(url);
-                isOverrideLocal = true;
                 setButtonLabel(LABEL_OVERRIDE);
                 console.log(`[GIC] 🖼️ 生成画像を背景に設定: ${url}`);
             } catch (e) {
                 console.error('[GIC] ImageDisplayExtension エラー:', e);
             }
         }
-        break;
+
+        // 3) チャットデータからメッセージを削除
+        //    splice で配列から除去し、saveChat / printMessages で永続化・再描画
+        context.chat.splice(i, 1);
+        try {
+            await saveChat();
+            printMessages();
+            console.log(`[GIC] 🗑️ 画像生成メッセージを削除しました (index=${i})`);
+        } catch (e) {
+            console.error('[GIC] saveChat/printMessages エラー:', e);
+        }
+
+        break; // 最新の1件のみ処理
     }
 }
 
