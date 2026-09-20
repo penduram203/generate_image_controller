@@ -10,7 +10,7 @@ const LABEL_NORMAL   = '事前設定';
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
-let isOverrideLocal = false;          // ボタンのモード状態（ローカル管理）
+let isOverrideLocal = false;
 const processedMessageKeys = new Set();
 
 // ===== ユーティリティ =====
@@ -42,51 +42,66 @@ function setButtonLabel(label) {
 
 // ===== 生成画像のスキャン =====
 
+/**
+ * チャット配列を末尾から走査し、最新の生成画像メッセージのみを処理する。
+ * それより古い生成画像メッセージは「処理済み」としてマークするだけにする。
+ * これにより、リロード後に古い画像が順番に表示される問題を防ぐ。
+ */
 async function scanForGeneratedImages() {
     const context = getContext();
     if (!context?.chat) return;
+
+    let foundNewest = false;
 
     for (let i = context.chat.length - 1; i >= 0; i--) {
         const msg = context.chat[i];
         if (!isGeneratedImageMessage(msg)) continue;
 
         const key = getMessageKey(msg);
-        if (processedMessageKeys.has(key)) continue;
-        processedMessageKeys.add(key);
 
-        const url = extractImageUrl(msg);
-        console.log(`[GIC] 🔍 未処理の生成画像メッセージを検出 (index=${i}, url=${url})`);
-        if (!url) continue;
+        if (!foundNewest) {
+            // === 最新の生成画像メッセージ ===
+            foundNewest = true;
 
-        // 1) AIから隠す（削除前の安全策）
-        if (!msg.is_system) {
-            msg.is_system = true;
-        }
+            if (processedMessageKeys.has(key)) {
+                // 既に処理済み → 何もしない（再表示しない）
+                continue;
+            }
+            processedMessageKeys.add(key);
 
-        // 2) IDEに強制表示を依頼
-        lastGeneratedImageUrl = url;
-        if (window.ImageDisplayExtension?.setOverrideImage) {
-            try {
-                await window.ImageDisplayExtension.setOverrideImage(url);
-                setButtonLabel(LABEL_OVERRIDE);
-                console.log(`[GIC] 🖼️ 生成画像を背景に設定: ${url}`);
-            } catch (e) {
-                console.error('[GIC] ImageDisplayExtension エラー:', e);
+            const url = extractImageUrl(msg);
+            if (!url) continue;
+
+            // AIから隠す
+            if (!msg.is_system) {
+                msg.is_system = true;
+                try {
+                    await saveChat();
+                    printMessages();
+                } catch (e) {
+                    console.error('[GIC] saveChat/printMessages エラー:', e);
+                }
+            }
+
+            // IDEに強制表示を依頼
+            lastGeneratedImageUrl = url;
+            if (window.ImageDisplayExtension?.setOverrideImage) {
+                try {
+                    await window.ImageDisplayExtension.setOverrideImage(url);
+                    isOverrideLocal = true;
+                    setButtonLabel(LABEL_OVERRIDE);
+                    console.log(`[GIC] 🖼️ 最新の生成画像を背景に設定: ${url}`);
+                } catch (e) {
+                    console.error('[GIC] ImageDisplayExtension エラー:', e);
+                }
+            }
+        } else {
+            // === 最新より古い生成画像メッセージ ===
+            // 表示には使わず、処理済みマークだけ付ける
+            if (!processedMessageKeys.has(key)) {
+                processedMessageKeys.add(key);
             }
         }
-
-        // 3) チャットデータからメッセージを削除
-        //    splice で配列から除去し、saveChat / printMessages で永続化・再描画
-        context.chat.splice(i, 1);
-        try {
-            await saveChat();
-            printMessages();
-            console.log(`[GIC] 🗑️ 画像生成メッセージを削除しました (index=${i})`);
-        } catch (e) {
-            console.error('[GIC] saveChat/printMessages エラー:', e);
-        }
-
-        break; // 最新の1件のみ処理
     }
 }
 
@@ -159,7 +174,6 @@ function createReleaseButton() {
         touchAction: 'manipulation',
     });
 
-    // ホバー制御
     btn.addEventListener('mouseenter', () => {
         btn.style.opacity = '1';
         btn.style.backgroundColor = '#666';
@@ -169,15 +183,11 @@ function createReleaseButton() {
         btn.style.backgroundColor = '#444';
     });
 
-    // ===== 青フラッシュ =====
     let flashTimer = null;
     const flashBlue = () => {
-        // 既存のタイマーをクリア
         if (flashTimer) clearTimeout(flashTimer);
-        // 青く点灯
         btn.style.backgroundColor = '#0a84ff';
         btn.style.opacity = '1';
-        // 250ms 後に元の色に戻す
         flashTimer = setTimeout(() => {
             const hovering = btn.matches(':hover');
             btn.style.backgroundColor = hovering ? '#666' : '#444';
@@ -186,14 +196,13 @@ function createReleaseButton() {
         }, 250);
     };
 
-    // ===== クリック処理 =====
     let lastActionTime = 0;
     const triggerAction = (source) => {
         const now = Date.now();
-        if (now - lastActionTime < 200) return;   // 二重発火防止
+        if (now - lastActionTime < 200) return;
         lastActionTime = now;
         console.log(`[GIC] トリガー: ${source}`);
-        flashBlue();                              // ← 青く点灯
+        flashBlue();
         handleButtonAction();
     };
 
