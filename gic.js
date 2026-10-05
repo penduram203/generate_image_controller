@@ -1,4 +1,4 @@
-import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
+import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 
 console.log('[GIC] モジュールロード開始');
@@ -7,11 +7,25 @@ console.log('[GIC] モジュールロード開始');
 const BUTTON_ID = 'gic-release-override-button';
 const LABEL_OVERRIDE = '背景生成';
 const LABEL_NORMAL   = '事前設定';
+const HIDE_CLASS     = 'gic-hidden-by-text-styling';
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
 const processedMessageKeys = new Set();
+
+// ===== スタイル注入（クラスで非表示にするためのCSS） =====
+(function injectGicStyle() {
+    if (document.getElementById('gic-injected-style')) return;
+    const style = document.createElement('style');
+    style.id = 'gic-injected-style';
+    style.textContent = `
+        #${BUTTON_ID}.${HIDE_CLASS} {
+            display: none !important;
+        }
+    `;
+    document.head.appendChild(style);
+})();
 
 // ===== ユーティリティ =====
 
@@ -40,13 +54,62 @@ function setButtonLabel(label) {
     }
 }
 
-// ===== 生成画像のスキャン =====
+// ===== Text_stylingパネル開閉監視 =====
 
 /**
- * チャット配列を末尾から走査し、最新の生成画像メッセージのみを処理する。
- * それより古い生成画像メッセージは「処理済み」としてマークするだけにする。
- * これにより、リロード後に古い画像が順番に表示される問題を防ぐ。
+ * Text_styling拡張機能のパネルが表示中かどうかを判定
  */
+function isTextStylingPanelOpen() {
+    const panel = document.getElementById('text-styling-panel');
+    if (!panel) return false;
+    const cs = getComputedStyle(panel);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    if (parseFloat(cs.opacity) === 0) return false;
+    const rect = panel.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    return true;
+}
+
+let lastTextStylingState = null;
+
+/**
+ * Text_stylingパネルの開閉状態に応じてボタンの表示/非表示を切り替え
+ * クラスで制御するため、IDE側のstyle.display操作と競合しない
+ */
+function syncButtonVisibilityForTextStyling() {
+    const btn = document.getElementById(BUTTON_ID);
+    if (!btn) return;
+    const isOpen = isTextStylingPanelOpen();
+    if (isOpen === lastTextStylingState) return;
+    lastTextStylingState = isOpen;
+
+    if (isOpen) {
+        btn.classList.add(HIDE_CLASS);
+        console.log('[GIC] 📝 Text_stylingパネル表示中 → GICボタンを非表示');
+    } else {
+        btn.classList.remove(HIDE_CLASS);
+        console.log('[GIC] 📝 Text_stylingパネル閉じた → GICボタンを再表示');
+    }
+}
+
+/**
+ * bodyのDOM変化を監視して、Text_stylingパネルの開閉を検出
+ */
+function setupTextStylingObserver() {
+    const observer = new MutationObserver(() => {
+        syncButtonVisibilityForTextStyling();
+    });
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+    });
+    console.log('[GIC] 📝 Text_stylingパネル監視を開始しました');
+}
+
+// ===== 生成画像のスキャン =====
+
 async function scanForGeneratedImages() {
     const context = getContext();
     if (!context?.chat) return;
@@ -60,11 +123,9 @@ async function scanForGeneratedImages() {
         const key = getMessageKey(msg);
 
         if (!foundNewest) {
-            // === 最新の生成画像メッセージ ===
             foundNewest = true;
 
             if (processedMessageKeys.has(key)) {
-                // 既に処理済み → 何もしない（再表示しない）
                 continue;
             }
             processedMessageKeys.add(key);
@@ -72,7 +133,6 @@ async function scanForGeneratedImages() {
             const url = extractImageUrl(msg);
             if (!url) continue;
 
-            // AIから隠す
             if (!msg.is_system) {
                 msg.is_system = true;
                 try {
@@ -83,7 +143,6 @@ async function scanForGeneratedImages() {
                 }
             }
 
-            // IDEに強制表示を依頼
             lastGeneratedImageUrl = url;
             if (window.ImageDisplayExtension?.setOverrideImage) {
                 try {
@@ -96,8 +155,6 @@ async function scanForGeneratedImages() {
                 }
             }
         } else {
-            // === 最新より古い生成画像メッセージ ===
-            // 表示には使わず、処理済みマークだけ付ける
             if (!processedMessageKeys.has(key)) {
                 processedMessageKeys.add(key);
             }
@@ -111,7 +168,6 @@ function handleButtonAction() {
     console.log(`[GIC] ボタンアクション: 現在=${isOverrideLocal ? '背景生成' : '事前設定'}, lastUrl=${lastGeneratedImageUrl}`);
 
     if (isOverrideLocal) {
-        // ---- 背景生成 → 事前設定 ----
         if (window.ImageDisplayExtension?.clearOverrideImage) {
             try {
                 window.ImageDisplayExtension.clearOverrideImage();
@@ -123,7 +179,6 @@ function handleButtonAction() {
         isOverrideLocal = false;
         setButtonLabel(LABEL_NORMAL);
     } else {
-        // ---- 事前設定 → 背景生成 ----
         if (lastGeneratedImageUrl && window.ImageDisplayExtension?.setOverrideImage) {
             try {
                 window.ImageDisplayExtension.setOverrideImage(lastGeneratedImageUrl);
@@ -155,7 +210,7 @@ function createReleaseButton() {
         position: 'fixed',
         left: '0',
         bottom: '10%',
-        zIndex: '2147483647',
+        zIndex: '15000',
         padding: '6px 12px',
         fontSize: '12px',
         color: '#ffffff',
@@ -221,6 +276,9 @@ function createReleaseButton() {
     document.body.appendChild(btn);
     console.log('[GIC] ✅ ボタンを画面左端(bottom:10%)に配置しました');
     setButtonLabel(isOverrideLocal ? LABEL_OVERRIDE : LABEL_NORMAL);
+
+    // 初期状態を反映
+    syncButtonVisibilityForTextStyling();
 }
 
 // ===== イベント登録 =====
@@ -244,12 +302,15 @@ function initializeGIC() {
     console.log('[GIC] 初期化開始');
     createReleaseButton();
     setupListeners();
+    setupTextStylingObserver();
 
     setInterval(() => {
         scanForGeneratedImages();
+        syncButtonVisibilityForTextStyling();
     }, 1500);
 
     scanForGeneratedImages();
+    syncButtonVisibilityForTextStyling();
 }
 
 if (document.readyState === 'loading') {
