@@ -58,20 +58,13 @@ function setButtonLabel(label) {
 
 function isTextStylingPanelOpen() {
     const panel = document.getElementById('text-styling-panel');
-    if (!panel) {
-        console.log('[GIC] panel not found');
-        return false;
-    }
-    const hasHidden = panel.classList.contains('hidden');
+    if (!panel) return false;
+
+    if (panel.classList.contains('hidden')) return false;
+
     const cs = getComputedStyle(panel);
-    console.log('[GIC] panel state:', {
-        hasHidden,
-        display: cs.display,
-        visibility: cs.visibility,
-        classList: panel.className,
-    });
-    if (hasHidden) return false;
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+
     return true;
 }
 
