@@ -56,24 +56,22 @@ function setButtonLabel(label) {
 
 // ===== Text_stylingパネル開閉監視 =====
 
-/**
- * Text_styling拡張機能のパネルが表示中かどうかを判定
- */
-/**
- * Text_styling拡張機能のパネルが表示中かどうかを判定
- * Text_stylingは hidden クラスの付け外しで開閉を制御している
- */
 function isTextStylingPanelOpen() {
     const panel = document.getElementById('text-styling-panel');
-    if (!panel) return false;
-
-    // パネルが「閉じている」ことを示す hidden クラスをチェック
-    if (panel.classList.contains('hidden')) return false;
-
-    // 念のため display / visibility でも確認
+    if (!panel) {
+        console.log('[GIC] panel not found');
+        return false;
+    }
+    const hasHidden = panel.classList.contains('hidden');
     const cs = getComputedStyle(panel);
+    console.log('[GIC] panel state:', {
+        hasHidden,
+        display: cs.display,
+        visibility: cs.visibility,
+        classList: panel.className,
+    });
+    if (hasHidden) return false;
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-
     return true;
 }
 
