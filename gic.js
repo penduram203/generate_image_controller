@@ -59,14 +59,21 @@ function setButtonLabel(label) {
 /**
  * Text_styling拡張機能のパネルが表示中かどうかを判定
  */
+/**
+ * Text_styling拡張機能のパネルが表示中かどうかを判定
+ * Text_stylingは hidden クラスの付け外しで開閉を制御している
+ */
 function isTextStylingPanelOpen() {
     const panel = document.getElementById('text-styling-panel');
     if (!panel) return false;
+
+    // パネルが「閉じている」ことを示す hidden クラスをチェック
+    if (panel.classList.contains('hidden')) return false;
+
+    // 念のため display / visibility でも確認
     const cs = getComputedStyle(panel);
     if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-    if (parseFloat(cs.opacity) === 0) return false;
-    const rect = panel.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
+
     return true;
 }
 
