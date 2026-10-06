@@ -44,7 +44,7 @@ const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 /**
  * ギャラリーウィンドウの高さを増やす量(px)。上下に分かれて広がる。
  */
-const GALLERY_WINDOW_HEIGHT_DELTA = 900;
+const GALLERY_WINDOW_HEIGHT_DELTA = 700;
 
 /**
  * ギャラリー下部ページネーションボタンの縦幅(px)
