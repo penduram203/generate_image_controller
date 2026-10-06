@@ -33,9 +33,18 @@ const GALLERY_PREVIEW_SELECTORS = [
 
 /**
  * 拡大パネルを画面内に収めるときのマージン(px)
+ * ★ 以前より小さくすることで、画像をより大きく表示する
  */
-const GALLERY_PREVIEW_MARGIN_X = 40;
-const GALLERY_PREVIEW_MARGIN_Y = 60;
+const GALLERY_PREVIEW_MARGIN_X = 10;
+const GALLERY_PREVIEW_MARGIN_Y = 20;
+
+/**
+ * フィット計算の結果に掛ける倍率乗数。
+ * - 1.0 = 画面内ぴったり
+ * - 1.2 = 20% 大きく（画面からはみ出す可能性あり）
+ * ★ ここを大きくすればするほどプレビューが大きくなる
+ */
+const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.2;
 
 /**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
@@ -401,9 +410,9 @@ function closePreviewElement(el) {
 }
 
 /**
- * 拡大パネル内の画像を、縦横比を保ったままビューポート内に収める
- * - naturalWidth/naturalHeight を基準に倍率を計算
- * - 画面外にはみ出さない最大サイズに拡大
+ * 拡大パネル内の画像を、縦横比を保ったままビューポート内に収める。
+ * - naturalWidth/naturalHeight を基準にフィット倍率を計算
+ * - さらに GALLERY_PREVIEW_SCALE_MULTIPLIER を掛けて拡大
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -440,9 +449,13 @@ function fitPreviewToViewport(panel) {
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        const scale = Math.min(maxW / nw, maxH / nh);
-        const finalW = Math.max(1, Math.floor(nw * scale));
-        const finalH = Math.max(1, Math.floor(nh * scale));
+        // 画面内に収める基本倍率
+        const fitScale = Math.min(maxW / nw, maxH / nh);
+        // ★ 乗数を掛けてさらに拡大
+        const finalScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
+
+        const finalW = Math.max(1, Math.floor(nw * finalScale));
+        const finalH = Math.max(1, Math.floor(nh * finalScale));
 
         img.style.setProperty('width', finalW + 'px', 'important');
         img.style.setProperty('height', finalH + 'px', 'important');
