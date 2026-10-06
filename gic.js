@@ -4,15 +4,44 @@ import { getContext } from '../../../extensions.js';
 console.log('[GIC] モジュールロード開始');
 
 // ===== 定数 =====
-const BUTTON_ID = 'gic-release-override-button';
-const LABEL_OVERRIDE = '背景生成';
-const LABEL_NORMAL   = '事前設定';
-const HIDE_CLASS     = 'gic-hidden-by-text-styling';
+const MODULE_NAME      = 'generate_image_controller';
+const BUTTON_ID        = 'gic-release-override-button';
+const LABEL_OVERRIDE   = '背景生成';
+const LABEL_NORMAL     = '事前設定';
+const HIDE_CLASS       = 'gic-hidden-by-text-styling';
+const HIDDEN_MES_CLASS = 'gic-hidden-message';
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
 const processedMessageKeys = new Set();
+
+// ===== 永続化ヘルパー =====
+function loadPersistedState() {
+    try {
+        const ctx = getContext();
+        const st = ctx?.extensionSettings?.[MODULE_NAME];
+        if (!st) return;
+        if (typeof st.isOverrideLocal === 'boolean') isOverrideLocal = st.isOverrideLocal;
+        if (typeof st.lastGeneratedImageUrl === 'string') lastGeneratedImageUrl = st.lastGeneratedImageUrl;
+        console.log(`[GIC] 永続状態を復元: isOverrideLocal=${isOverrideLocal}, lastUrl=${lastGeneratedImageUrl}`);
+    } catch (e) {
+        console.warn('[GIC] 永続状態の読込に失敗:', e);
+    }
+}
+
+function savePersistedState() {
+    try {
+        const ctx = getContext();
+        if (!ctx) return;
+        if (!ctx.extensionSettings[MODULE_NAME]) ctx.extensionSettings[MODULE_NAME] = {};
+        ctx.extensionSettings[MODULE_NAME].isOverrideLocal = isOverrideLocal;
+        ctx.extensionSettings[MODULE_NAME].lastGeneratedImageUrl = lastGeneratedImageUrl;
+        if (typeof ctx.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
+    } catch (e) {
+        console.warn('[GIC] 永続状態の保存に失敗:', e);
+    }
+}
 
 // ===== スタイル注入（クラスで非表示にするためのCSS） =====
 (function injectGicStyle() {
@@ -51,6 +80,21 @@ function setButtonLabel(label) {
     if (btn.textContent !== label) {
         btn.textContent = label;
         console.log(`[GIC] ラベル設定: ${label}`);
+    }
+}
+
+// ===== DOMマーキング（パス非依存のCSSフォールバック用） =====
+
+function markGeneratedMessagesInDom() {
+    const context = getContext();
+    if (!context?.chat) return;
+    for (let i = 0; i < context.chat.length; i++) {
+        const msg = context.chat[i];
+        if (!isGeneratedImageMessage(msg)) continue;
+        const el = document.querySelector(`.mes[mesid="${i}"]`);
+        if (el && !el.classList.contains(HIDDEN_MES_CLASS)) {
+            el.classList.add(HIDDEN_MES_CLASS);
+        }
     }
 }
 
@@ -106,58 +150,100 @@ function setupTextStylingObserver() {
     console.log('[GIC] 📝 Text_stylingパネル監視を開始しました');
 }
 
-// ===== 生成画像のスキャン =====
+// ===== 生成画像のスキャン（リロード後の状態復元を含む） =====
 
 async function scanForGeneratedImages() {
     const context = getContext();
     if (!context?.chat) return;
 
-    let foundNewest = false;
-
+    // --- 最新の生成画像メッセージを探索 ---
+    let newest = null;
+    let newestIdx = -1;
     for (let i = context.chat.length - 1; i >= 0; i--) {
-        const msg = context.chat[i];
-        if (!isGeneratedImageMessage(msg)) continue;
+        if (isGeneratedImageMessage(context.chat[i])) {
+            newest = context.chat[i];
+            newestIdx = i;
+            break;
+        }
+    }
 
-        const key = getMessageKey(msg);
+    if (!newest) {
+        markGeneratedMessagesInDom();
+        return;
+    }
 
-        if (!foundNewest) {
-            foundNewest = true;
+    const url = extractImageUrl(newest);
+    if (!url) {
+        markGeneratedMessagesInDom();
+        return;
+    }
 
-            if (processedMessageKeys.has(key)) {
-                continue;
+    const key = getMessageKey(newest);
+    const alreadyProcessed = processedMessageKeys.has(key);
+
+    // ★ 処理済みでも常に最新URLは復元する（リロード対策）
+    lastGeneratedImageUrl = url;
+
+    if (!alreadyProcessed) {
+        processedMessageKeys.add(key);
+
+        if (!newest.is_system) {
+            newest.is_system = true;
+            try {
+                await saveChat();
+                printMessages();
+            } catch (e) {
+                console.error('[GIC] saveChat/printMessages エラー:', e);
             }
-            processedMessageKeys.add(key);
+        }
 
-            const url = extractImageUrl(msg);
-            if (!url) continue;
-
-            if (!msg.is_system) {
-                msg.is_system = true;
-                try {
-                    await saveChat();
-                    printMessages();
-                } catch (e) {
-                    console.error('[GIC] saveChat/printMessages エラー:', e);
+        // 新規検出時は自動的に背景表示モードへ
+        if (window.ImageDisplayExtension?.setOverrideImage) {
+            try {
+                await window.ImageDisplayExtension.setOverrideImage(url);
+                isOverrideLocal = true;
+                setButtonLabel(LABEL_OVERRIDE);
+                savePersistedState();
+                console.log(`[GIC] 🖼️ 最新の生成画像を背景に設定: ${url}`);
+            } catch (e) {
+                console.error('[GIC] ImageDisplayExtension エラー:', e);
+            }
+        }
+    } else {
+        // ★ 処理済み（リロード後など）: override状態を復元
+        if (!isOverrideLocal) {
+            const ideIsOverride = window.ImageDisplayExtension?.isOverride?.();
+            if (ideIsOverride) {
+                isOverrideLocal = true;
+                setButtonLabel(LABEL_OVERRIDE);
+                savePersistedState();
+            } else if (newest.is_system) {
+                // is_system 済みのメッセージが残っているなら override 状態を再適用
+                if (window.ImageDisplayExtension?.setOverrideImage) {
+                    try {
+                        await window.ImageDisplayExtension.setOverrideImage(url);
+                        isOverrideLocal = true;
+                        setButtonLabel(LABEL_OVERRIDE);
+                        savePersistedState();
+                        console.log(`[GIC] 🔄 リロード後のoverride状態を復元: ${url}`);
+                    } catch (e) {
+                        console.error('[GIC] override復元エラー:', e);
+                    }
                 }
-            }
-
-            lastGeneratedImageUrl = url;
-            if (window.ImageDisplayExtension?.setOverrideImage) {
-                try {
-                    await window.ImageDisplayExtension.setOverrideImage(url);
-                    isOverrideLocal = true;
-                    setButtonLabel(LABEL_OVERRIDE);
-                    console.log(`[GIC] 🖼️ 最新の生成画像を背景に設定: ${url}`);
-                } catch (e) {
-                    console.error('[GIC] ImageDisplayExtension エラー:', e);
-                }
-            }
-        } else {
-            if (!processedMessageKeys.has(key)) {
-                processedMessageKeys.add(key);
             }
         }
     }
+
+    // 古い生成画像メッセージも processed としてマーク
+    for (let i = 0; i < newestIdx; i++) {
+        const msg = context.chat[i];
+        if (isGeneratedImageMessage(msg)) {
+            processedMessageKeys.add(getMessageKey(msg));
+        }
+    }
+
+    // DOM に gic-hidden-message クラスを付与（CSSフォールバック）
+    markGeneratedMessagesInDom();
 }
 
 // ===== ボタンのアクション =====
@@ -190,6 +276,7 @@ function handleButtonAction() {
         isOverrideLocal = true;
         setButtonLabel(LABEL_OVERRIDE);
     }
+    savePersistedState();
 }
 
 // ===== ボタンの生成 =====
@@ -202,7 +289,7 @@ function createReleaseButton() {
     btn.id = BUTTON_ID;
     btn.type = 'button';
     btn.title = '強制表示モード（背景生成）と通常モード（事前設定）を切り替える';
-    btn.textContent = LABEL_NORMAL;
+    btn.textContent = isOverrideLocal ? LABEL_OVERRIDE : LABEL_NORMAL;  // ★ 永続状態を反映
 
     Object.assign(btn.style, {
         position: 'fixed',
@@ -298,6 +385,10 @@ function setupListeners() {
 
 function initializeGIC() {
     console.log('[GIC] 初期化開始');
+
+    // ★ 永続化された状態を復元してからボタンを生成
+    loadPersistedState();
+
     createReleaseButton();
     setupListeners();
     setupTextStylingObserver();
@@ -305,6 +396,7 @@ function initializeGIC() {
     setInterval(() => {
         scanForGeneratedImages();
         syncButtonVisibilityForTextStyling();
+        markGeneratedMessagesInDom();
     }, 1500);
 
     scanForGeneratedImages();
@@ -328,6 +420,7 @@ if (document.readyState === 'loading') {
 
 export async function activate() {
     console.log('[GIC] activate() が呼ばれました');
+    loadPersistedState();
     createReleaseButton();
-    console.log('[GIC] ✅ Generate Image Controller: アクティベート完了');
+    console.log('[GIC] ✅ Generate Image Controller: アクトベート完了');
 }
