@@ -35,8 +35,8 @@ const GALLERY_PREVIEW_SELECTORS = [
  * 拡大パネルを画面内に収めるときのマージン(px)
  * ★ 以前より小さくすることで、画像をより大きく表示する
  */
-const GALLERY_PREVIEW_MARGIN_X = 0;
-const GALLERY_PREVIEW_MARGIN_Y = 0;
+const GALLERY_PREVIEW_MARGIN_X = 20;
+const GALLERY_PREVIEW_MARGIN_Y = 20;
 
 /**
  * フィット計算の結果に掛ける倍率乗数。
@@ -44,7 +44,7 @@ const GALLERY_PREVIEW_MARGIN_Y = 0;
  * - 1.2 = 20% 大きく（画面からはみ出す可能性あり）
  * ★ ここを大きくすればするほどプレビューが大きくなる
  */
-const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.2;
+const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
 /**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
