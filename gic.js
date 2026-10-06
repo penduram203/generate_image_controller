@@ -44,7 +44,7 @@ const GALLERY_PREVIEW_MARGIN_Y = 0;
  * - 1.2 = 20% 大きく（画面からはみ出す可能性あり）
  * ★ ここを大きくすればするほどプレビューが大きくなる
  */
-const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.5;
+const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.2;
 
 /**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
