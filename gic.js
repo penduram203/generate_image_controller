@@ -410,30 +410,33 @@ function closePreviewElement(el) {
 }
 
 /**
- * 拡大パネル内の画像を、縦横比を保ったままビューポート内に収める。
- * - naturalWidth/naturalHeight を基準にフィット倍率を計算
- * - さらに GALLERY_PREVIEW_SCALE_MULTIPLIER を掛けて拡大
- * - パネル自体も画像サイズに合わせてリサイズし、画像全体を表示する
+ * 拡大パネルを、縦横比を保ったままビューポート内に収める。
+ * - パネルは natural サイズで組ませる
+ * - パネル全体を transform: scale() で拡大
+ *   → ST 側の width/height/overflow !important を回避できる
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
 
-    // パネルを画面中央に固定（サイズは後段で決定）
+    const img = panel.querySelector('img');
+    const header = panel.querySelector('.panelControlBar');
+    if (!img) return;
+
+    // --- パネル配置 ---
     panel.style.setProperty('position', 'fixed', 'important');
     panel.style.setProperty('top', '50%', 'important');
     panel.style.setProperty('left', '50%', 'important');
     panel.style.setProperty('right', 'auto', 'important');
     panel.style.setProperty('bottom', 'auto', 'important');
-    panel.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
-    panel.style.setProperty('transform-origin', 'center center', 'important');
     panel.style.setProperty('margin', '0', 'important');
     panel.style.setProperty('padding', '0', 'important');
     panel.style.setProperty('box-sizing', 'border-box', 'important');
-    panel.style.setProperty('overflow', 'hidden', 'important');
+    panel.style.setProperty('overflow', 'visible', 'important');
     panel.style.setProperty('display', 'flex', 'important');
     panel.style.setProperty('flex-direction', 'column', 'important');
+    panel.style.setProperty('transform-origin', 'center center', 'important');
 
-    // 閉じるボタンの拡大をJS側でも強制
+    // --- 閉じるボタン ---
     const closeBtn = panel.querySelector('.dragClose');
     if (closeBtn) {
         closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
@@ -441,48 +444,48 @@ function fitPreviewToViewport(panel) {
         closeBtn.style.setProperty('display', 'inline-block', 'important');
     }
 
-    const img = panel.querySelector('img');
-    if (!img) return;
-
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const maxW = Math.max(100, vw - GALLERY_PREVIEW_MARGIN_X * 2);
-    const maxH = Math.max(100, vh - GALLERY_PREVIEW_MARGIN_Y * 2);
+    // --- ヘッダが潰れないように ---
+    if (header) {
+        header.style.setProperty('flex', '0 0 auto', 'important');
+    }
 
     const applySize = () => {
         const nw = img.naturalWidth || 0;
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        // 画面内に収める基本倍率
-        const fitScale = Math.min(maxW / nw, maxH / nh);
-        // 乗数を掛けてさらに拡大（画面からはみ出してよい）
-        const finalScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
-
-        const finalW = Math.max(1, Math.floor(nw * finalScale));
-        const finalH = Math.max(1, Math.floor(nh * finalScale));
-
-        // ヘッダ（panelControlBar）の高さを取得
-        const header = panel.querySelector('.panelControlBar');
-        const headerH = header ? header.offsetHeight : 0;
-
-        // ★ パネル自体を画像サイズ + ヘッダ高さにリサイズ
-        panel.style.setProperty('width', finalW + 'px', 'important');
-        panel.style.setProperty('height', (finalH + headerH) + 'px', 'important');
-
-        // ★ img はパネル内でヘッダ下に全体が映るようにサイズ指定
-        img.style.setProperty('width', finalW + 'px', 'important');
-        img.style.setProperty('height', finalH + 'px', 'important');
+        // img を natural サイズに（パネルがこれに合わせて自然に広がる）
+        img.style.setProperty('width', nw + 'px', 'important');
+        img.style.setProperty('height', nh + 'px', 'important');
         img.style.setProperty('max-width', 'none', 'important');
         img.style.setProperty('max-height', 'none', 'important');
         img.style.setProperty('object-fit', 'contain', 'important');
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // ヘッダがフレックスで潰れないように
-        if (header) {
-            header.style.setProperty('flex', '0 0 auto', 'important');
-        }
+        // パネルを natural サイズに（fit-content 相当）
+        panel.style.setProperty('width', 'auto', 'important');
+        panel.style.setProperty('height', 'auto', 'important');
+        panel.style.setProperty('max-width', 'none', 'important');
+        panel.style.setProperty('max-height', 'none', 'important');
+
+        // レイアウト確定後に transform: scale を計算
+        requestAnimationFrame(() => {
+            const pw = panel.offsetWidth;
+            const ph = panel.offsetHeight;
+            if (!pw || !ph) return;
+
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const fitScale = Math.min(vw / pw, vh / ph);
+            const finalScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
+
+            panel.style.setProperty(
+                'transform',
+                `translate(-50%, -50%) scale(${finalScale})`,
+                'important'
+            );
+        });
     };
 
     if (img.complete && img.naturalWidth) {
