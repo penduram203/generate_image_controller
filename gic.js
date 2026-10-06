@@ -37,6 +37,11 @@ const GALLERY_PREVIEW_SELECTORS = [
 const GALLERY_PREVIEW_MARGIN_X = 40;
 const GALLERY_PREVIEW_MARGIN_Y = 60;
 
+/**
+ * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
+ */
+const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
+
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
@@ -117,6 +122,13 @@ function savePersistedState() {
             transform-origin: center center !important;
             margin: 0 !important;
         }
+
+        /* 拡大パネルの閉じるボタンを ${GALLERY_PREVIEW_CLOSE_SCALE} 倍に */
+        ${previewSel} .dragClose {
+            transform: scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
+            transform-origin: top right !important;
+            display: inline-block !important;
+        }
     `;
     document.head.appendChild(style);
     console.log('[GIC] 🖼️ ギャラリー配置CSSを注入しました');
@@ -146,7 +158,6 @@ function setButtonLabel(label) {
     if (btn.textContent !== label) {
         btn.textContent = label;
         console.log(`[GIC] ラベル設定: ${label}`);
-        // ラベル幅が変わるのでギャラリーボタンの位置を更新
         requestAnimationFrame(positionGalleryButton);
     }
 }
@@ -214,7 +225,6 @@ async function scanForGeneratedImages() {
     const context = getContext();
     if (!context?.chat) return;
 
-    // --- 最新の生成画像メッセージを探索 ---
     let newest = null;
     let newestIdx = -1;
     for (let i = context.chat.length - 1; i >= 0; i--) {
@@ -238,7 +248,6 @@ async function scanForGeneratedImages() {
     const key = getMessageKey(newest);
     const alreadyProcessed = processedMessageKeys.has(key);
 
-    // ★ 処理済みでも常に最新URLは復元する（リロード対策）
     lastGeneratedImageUrl = url;
 
     if (!alreadyProcessed) {
@@ -254,7 +263,6 @@ async function scanForGeneratedImages() {
             }
         }
 
-        // 新規検出時は自動的に背景表示モードへ
         if (window.ImageDisplayExtension?.setOverrideImage) {
             try {
                 await window.ImageDisplayExtension.setOverrideImage(url);
@@ -267,7 +275,6 @@ async function scanForGeneratedImages() {
             }
         }
     } else {
-        // ★ 処理済み（リロード後など）: override状態を復元
         if (!isOverrideLocal) {
             const ideIsOverride = window.ImageDisplayExtension?.isOverride?.();
             if (ideIsOverride) {
@@ -290,7 +297,6 @@ async function scanForGeneratedImages() {
         }
     }
 
-    // 古い生成画像メッセージも processed としてマーク
     for (let i = 0; i < newestIdx; i++) {
         const msg = context.chat[i];
         if (isGeneratedImageMessage(msg)) {
@@ -298,7 +304,6 @@ async function scanForGeneratedImages() {
         }
     }
 
-    // DOM に gic-hidden-message クラスを付与（CSSフォールバック）
     markGeneratedMessagesInDom();
 }
 
@@ -337,17 +342,12 @@ function handleButtonAction() {
 
 // ===== ギャラリーボタンの位置制御 =====
 
-/**
- * GICボタンの実幅を読み取り、ギャラリーボタンをその右隣に配置する。
- * ラベル変更などでGICボタン幅が変わった際に呼ぶ。
- */
 function positionGalleryButton() {
     const gicBtn = document.getElementById(BUTTON_ID);
     const galleryBtn = document.getElementById(GALLERY_BUTTON_ID);
     if (!gicBtn || !galleryBtn) return;
     const w = gicBtn.offsetWidth;
-    if (!w) return; // まだレイアウトされていない
-    // 4px の隙間を開けて配置
+    if (!w) return;
     galleryBtn.style.left = (w + 4) + 'px';
 }
 
@@ -381,19 +381,11 @@ function isGalleryOpen() {
 
 // ===== ギャラリー配置・プレビュー制御 =====
 
-/**
- * すべての拡大パネルを取得する
- */
 function getAllPreviews() {
     const selector = GALLERY_PREVIEW_SELECTORS.join(', ');
     return Array.from(document.querySelectorAll(selector));
 }
 
-/**
- * 拡大パネルを閉じる
- * - 公式の閉じるボタン(.dragClose)があればクリック
- * - なければ直接DOMから削除
- */
 function closePreviewElement(el) {
     if (!el || !el.parentNode) return;
     const closeBtn = el.querySelector('.dragClose');
@@ -416,7 +408,6 @@ function closePreviewElement(el) {
 function fitPreviewToViewport(panel) {
     if (!panel) return;
 
-    // パネル自体を画面中央に固定
     panel.style.setProperty('position', 'fixed', 'important');
     panel.style.setProperty('top', '50%', 'important');
     panel.style.setProperty('left', '50%', 'important');
@@ -427,6 +418,14 @@ function fitPreviewToViewport(panel) {
     panel.style.setProperty('margin', '0', 'important');
     panel.style.setProperty('width', 'auto', 'important');
     panel.style.setProperty('height', 'auto', 'important');
+
+    // 閉じるボタンの拡大をJS側でも強制
+    const closeBtn = panel.querySelector('.dragClose');
+    if (closeBtn) {
+        closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
+        closeBtn.style.setProperty('transform-origin', 'top right', 'important');
+        closeBtn.style.setProperty('display', 'inline-block', 'important');
+    }
 
     const img = panel.querySelector('img');
     if (!img) return;
@@ -441,7 +440,6 @@ function fitPreviewToViewport(panel) {
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        // 縦横比を保ったまま maxW/maxH 内に収まる倍率
         const scale = Math.min(maxW / nw, maxH / nh);
         const finalW = Math.max(1, Math.floor(nw * scale));
         const finalH = Math.max(1, Math.floor(nh * scale));
@@ -457,7 +455,6 @@ function fitPreviewToViewport(panel) {
     if (img.complete && img.naturalWidth) {
         applySize();
     } else {
-        // 読み込み完了後に再実行（多重登録防止）
         if (img.dataset.gicFitBound !== 'true') {
             img.dataset.gicFitBound = 'true';
             img.addEventListener('load', () => {
@@ -471,8 +468,6 @@ function fitPreviewToViewport(panel) {
 
 /**
  * ギャラリーとプレビューの位置・サイズをJSで強制適用する。
- * - 最新のプレビューのみを残し、古いものは閉じる
- * - 最新プレビューをビューポート内に収める
  */
 function applyGalleryLayout() {
     // ギャラリーウィンドウ
@@ -495,7 +490,6 @@ function applyGalleryLayout() {
         return;
     }
 
-    // 最新（DOM順で最後）のみを残す
     const latest = previews[previews.length - 1];
     if (latest !== currentPreviewEl) {
         for (const el of previews) {
@@ -505,7 +499,6 @@ function applyGalleryLayout() {
         currentPreviewEl = latest;
     }
 
-    // 最新の拡大パネルをビューポート内に収める
     fitPreviewToViewport(latest);
 }
 
@@ -527,7 +520,6 @@ function syncGalleryButtonVisibility() {
         }
     }
 
-    // ★ ギャラリーが開いたタイミングで配置を即時適用
     if (galleryOpen) {
         applyGalleryLayout();
     }
@@ -536,7 +528,7 @@ function syncGalleryButtonVisibility() {
 function setupGalleryObserverForGic() {
     const observer = new MutationObserver(() => {
         syncGalleryButtonVisibility();
-        applyGalleryLayout();   // ギャラリー・プレビューの配置を毎回強制
+        applyGalleryLayout();
     });
     observer.observe(document.body, {
         childList: true,
@@ -545,25 +537,18 @@ function setupGalleryObserverForGic() {
         attributeFilter: ['style', 'class'],
     });
 
-    // 保険の定期チェック
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
     }, 300);
 
-    // 初回チェック
     syncGalleryButtonVisibility();
     applyGalleryLayout();
 }
 
 // ===== 公式ギャラリーを開く =====
 
-/**
- * SillyTavern公式ギャラリーを開く。
- * 複数の方法を順に試行し、成功した時点で true を返す。
- */
 function openGalleryFromGic() {
-    // 1. SillyTavern context に公開された関数があれば使う
     try {
         const ctx = getContext();
         if (ctx && typeof ctx.openGallery === 'function') {
@@ -573,7 +558,6 @@ function openGalleryFromGic() {
         }
     } catch (e) { /* ignore */ }
 
-    // 2. 直接的なボタンIDを試す
     const directSelectors = [
         '#gallery_button',
         '#gallery-button',
@@ -590,7 +574,6 @@ function openGalleryFromGic() {
         }
     }
 
-    // 3. extensionsMenu 内の項目をテキストで探す
     const menu = document.querySelector('#extensionsMenu');
     if (menu) {
         const items = menu.querySelectorAll('a, button, .list-group-item, [role="menuitem"]');
@@ -605,7 +588,6 @@ function openGalleryFromGic() {
         }
     }
 
-    // 4. ページ全体からテキスト一致で探す（最終手段）
     const allClickable = document.querySelectorAll('button, a');
     for (const el of allClickable) {
         const text = (el.textContent || '').trim().toLowerCase();
@@ -705,7 +687,6 @@ function createReleaseButton() {
 
     syncButtonVisibilityForTextStyling();
 
-    // レイアウト確定後にギャラリーボタンを再配置
     requestAnimationFrame(positionGalleryButton);
 }
 
@@ -723,7 +704,7 @@ function createGalleryButton() {
 
     Object.assign(btn.style, {
         position: 'fixed',
-        left: '0',           // positionGalleryButton() で動的に更新
+        left: '0',
         bottom: 'calc(10% - 10px)',
         zIndex: '15000',
         padding: '6px 12px',
@@ -790,10 +771,8 @@ function createGalleryButton() {
     document.body.appendChild(btn);
     console.log('[GIC] ✅ ギャラリーボタンをDOMに追加しました');
 
-    // レイアウト確定後に位置を合わせる
     requestAnimationFrame(positionGalleryButton);
 
-    // 初回のギャラリー状態チェック
     syncGalleryButtonVisibility();
 }
 
@@ -817,7 +796,6 @@ function setupListeners() {
 function initializeGIC() {
     console.log('[GIC] 初期化開始');
 
-    // ★ 永続化された状態を復元してからボタンを生成
     loadPersistedState();
 
     createReleaseButton();
