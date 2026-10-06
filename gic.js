@@ -33,23 +33,33 @@ const GALLERY_PREVIEW_SELECTORS = [
 
 /**
  * 拡大パネルを画面内に収めるときのマージン(px)
- * ★ 以前より小さくすることで、画像をより大きく表示する
+ * 0 にすることで画面いっぱいまで拡大
  */
-const GALLERY_PREVIEW_MARGIN_X = 20;
-const GALLERY_PREVIEW_MARGIN_Y = 20;
+const GALLERY_PREVIEW_MARGIN_X = 0;
+const GALLERY_PREVIEW_MARGIN_Y = 0;
 
 /**
  * フィット計算の結果に掛ける倍率乗数。
- * - 1.0 = 画面内ぴったり
- * - 1.2 = 20% 大きく（画面からはみ出す可能性あり）
- * ★ ここを大きくすればするほどプレビューが大きくなる
+ * 大きくするほどプレビューが大きくなる（画面からはみ出してよい）
  */
-const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
+const GALLERY_PREVIEW_SCALE_MULTIPLIER = 2.0;
 
 /**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
  */
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
+
+/**
+ * ギャラリーウィンドウの高さを広げる合計量(px)。
+ * 上下 50px ずつ → 合計 100px。
+ */
+const GALLERY_WINDOW_HEIGHT_DELTA = 100;
+
+/**
+ * ギャラリー下部ページネーションボタンの縦幅(px)。
+ * 元の約4倍を想定。
+ */
+const GALLERY_PAGINATION_HEIGHT = 40;
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
@@ -139,7 +149,7 @@ function savePersistedState() {
             display: inline-block !important;
         }
 
-        /* ギャラリー下部のページネーションボタンの縦幅を4倍に */
+        /* ギャラリー下部のページネーションボタンの縦幅を ${GALLERY_PAGINATION_HEIGHT}px に */
         .nGY2GalleryBottom {
             display: flex !important;
             align-items: center !important;
@@ -147,9 +157,9 @@ function savePersistedState() {
         }
         .nGY2paginationRectangle,
         .nGY2paginationRectangleCurrentPage {
-            height: 40px !important;
-            min-height: 40px !important;
-            max-height: 40px !important;
+            height: ${GALLERY_PAGINATION_HEIGHT}px !important;
+            min-height: ${GALLERY_PAGINATION_HEIGHT}px !important;
+            max-height: ${GALLERY_PAGINATION_HEIGHT}px !important;
         }
     `;
     document.head.appendChild(style);
@@ -423,10 +433,53 @@ function closePreviewElement(el) {
 }
 
 /**
+ * ギャラリーウィンドウの高さを「自然な高さ + GALLERY_WINDOW_HEIGHT_DELTA」に拡張する。
+ * - 上下 50px ずつ、合計 100px 拡張（中央配置なので自然に上下へ広がる）
+ * - 目標高さは要素ごとに一度だけ計算し、dataset に保存して再計算を防ぐ
+ */
+function expandGalleryWindow() {
+    for (const sel of GALLERY_WINDOW_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+
+        // 目標高さが未計算なら計測
+        if (!el.dataset.gicTargetHeight) {
+            // 自前の height 指定を一時退避
+            const savedHeight = el.style.getPropertyValue('height');
+            const savedMin    = el.style.getPropertyValue('min-height');
+            const savedMax    = el.style.getPropertyValue('max-height');
+
+            el.style.removeProperty('height');
+            el.style.removeProperty('min-height');
+            el.style.removeProperty('max-height');
+
+            const naturalH = el.offsetHeight;
+
+            // 復元
+            if (savedHeight) el.style.setProperty('height', savedHeight);
+            if (savedMin) el.style.setProperty('min-height', savedMin);
+            if (savedMax) el.style.setProperty('max-height', savedMax);
+
+            if (naturalH > 0) {
+                el.dataset.gicTargetHeight = String(naturalH + GALLERY_WINDOW_HEIGHT_DELTA);
+            } else {
+                // 非表示状態などで測れない場合はスキップ
+                continue;
+            }
+        }
+
+        const targetH = el.dataset.gicTargetHeight + 'px';
+        el.style.setProperty('height', targetH, 'important');
+        el.style.setProperty('min-height', targetH, 'important');
+        el.style.setProperty('max-height', targetH, 'important');
+    }
+}
+
+/**
  * 拡大パネルを、縦横比を保ったままビューポート内に収める。
- * - パネルは natural サイズで組ませる
- * - パネル全体を transform: scale() で拡大
- *   → ST 側の width/height/overflow !important を回避できる
+ * - ST 側が width/height/overflow を !important で固定しているため
+ *   transform: scale() で見た目のみ拡大する
+ * - 画像は natural サイズでパネルに組ませ、パネル全体を scale する
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -476,7 +529,7 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // パネルを natural サイズに（fit-content 相当）
+        // パネルを natural サイズに
         panel.style.setProperty('width', 'auto', 'important');
         panel.style.setProperty('height', 'auto', 'important');
         panel.style.setProperty('max-width', 'none', 'important');
@@ -531,6 +584,18 @@ function applyGalleryLayout() {
         el.style.setProperty('transform', 'translateY(-50%)', 'important');
         el.style.setProperty('margin', '0', 'important');
     }
+
+    // ★ ギャラリーウィンドウの高さ拡張（上下 50px ずつ）
+    expandGalleryWindow();
+
+    // ★ ページネーションボタンの縦幅を強制
+    document.querySelectorAll(
+        '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
+    ).forEach(el => {
+        el.style.setProperty('height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+        el.style.setProperty('min-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+        el.style.setProperty('max-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+    });
 
     // 拡大パネル群
     const previews = getAllPreviews();
