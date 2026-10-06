@@ -49,7 +49,7 @@ const GALLERY_WINDOW_HEIGHT_DELTA = 600;
 /**
  * ギャラリー下部ページネーションボタンの縦幅(px)
  */
-const GALLERY_PAGINATION_HEIGHT = 30;
+const GALLERY_PAGINATION_HEIGHT = 40;
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
