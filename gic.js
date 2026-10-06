@@ -12,6 +12,30 @@ const LABEL_NORMAL     = '事前設定';
 const HIDE_CLASS       = 'gic-hidden-by-text-styling';
 const HIDDEN_MES_CLASS = 'gic-hidden-message';
 
+// ===== ギャラリー配置カスタマイズ用定数 =====
+
+/**
+ * 公式ギャラリーウィンドウのセレクタ。
+ * 画面左端・高さ中央に配置する。
+ */
+const GALLERY_WINDOW_SELECTORS = [
+    '#gallery',
+];
+
+/**
+ * 画像クリック時に表示される拡大パネルのセレクタ。
+ * 画面中央に配置し、2倍に拡大する。
+ */
+const GALLERY_PREVIEW_SELECTORS = [
+    '.galleryImageDraggable',
+    '#gallery .galleryImageDraggable',
+];
+
+/**
+ * 拡大パネルの倍率（現在の2倍）
+ */
+const GALLERY_PREVIEW_SCALE = 2;
+
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
@@ -55,6 +79,43 @@ function savePersistedState() {
         }
     `;
     document.head.appendChild(style);
+})();
+
+// ===== ギャラリー配置用CSS注入 =====
+(function injectGalleryLayoutStyle() {
+    if (document.getElementById('gic-gallery-layout-style')) return;
+    const style = document.createElement('style');
+    style.id = 'gic-gallery-layout-style';
+
+    const windowSel = GALLERY_WINDOW_SELECTORS.join(', ');
+    const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
+
+    style.textContent = `
+        /* ギャラリーウィンドウ: 画面左端・高さ中央 */
+        ${windowSel} {
+            position: fixed !important;
+            top: 50% !important;
+            left: 0 !important;
+            right: auto !important;
+            bottom: auto !important;
+            transform: translateY(-50%) !important;
+            margin: 0 !important;
+        }
+
+        /* 画像クリック時の拡大パネル: 画面中央 + 2倍 */
+        ${previewSel} {
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            right: auto !important;
+            bottom: auto !important;
+            transform: translate(-50%, -50%) scale(${GALLERY_PREVIEW_SCALE}) !important;
+            transform-origin: center center !important;
+            margin: 0 !important;
+        }
+    `;
+    document.head.appendChild(style);
+    console.log('[GIC] 🖼️ ギャラリー配置CSSを注入しました');
 })();
 
 // ===== ユーティリティ =====
@@ -314,6 +375,43 @@ function isGalleryOpen() {
     return false;
 }
 
+// ===== ギャラリー配置をJS側でも強制 =====
+
+/**
+ * ギャラリーとプレビューの位置・倍率をJSで強制適用する。
+ * - 本体がインラインstyleを後から書き換えるケースに対応
+ * - CSSは !important で書いてあるが、より確実にするため二重で適用
+ */
+function applyGalleryLayout() {
+    // ギャラリーウィンドウ
+    for (const sel of GALLERY_WINDOW_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        el.style.setProperty('position', 'fixed', 'important');
+        el.style.setProperty('top', '50%', 'important');
+        el.style.setProperty('left', '0', 'important');
+        el.style.setProperty('right', 'auto', 'important');
+        el.style.setProperty('bottom', 'auto', 'important');
+        el.style.setProperty('transform', 'translateY(-50%)', 'important');
+        el.style.setProperty('margin', '0', 'important');
+    }
+
+    // 拡大パネル
+    for (const sel of GALLERY_PREVIEW_SELECTORS) {
+        const els = document.querySelectorAll(sel);
+        els.forEach(el => {
+            el.style.setProperty('position', 'fixed', 'important');
+            el.style.setProperty('top', '50%', 'important');
+            el.style.setProperty('left', '50%', 'important');
+            el.style.setProperty('right', 'auto', 'important');
+            el.style.setProperty('bottom', 'auto', 'important');
+            el.style.setProperty('transform', `translate(-50%, -50%) scale(${GALLERY_PREVIEW_SCALE})`, 'important');
+            el.style.setProperty('transform-origin', 'center center', 'important');
+            el.style.setProperty('margin', '0', 'important');
+        });
+    }
+}
+
 let lastGalleryStateForGic = null;
 
 function syncGalleryButtonVisibility() {
@@ -322,20 +420,26 @@ function syncGalleryButtonVisibility() {
     lastGalleryStateForGic = galleryOpen;
 
     const btn = document.getElementById(GALLERY_BUTTON_ID);
-    if (!btn) return;
+    if (btn) {
+        if (galleryOpen) {
+            btn.style.setProperty('display', 'none', 'important');
+            console.log('[GIC] 📷 ギャラリー表示中 → ギャラリーボタンを非表示');
+        } else {
+            btn.style.removeProperty('display');
+            console.log('[GIC] 📷 ギャラリー非表示 → ギャラリーボタンを再表示');
+        }
+    }
 
+    // ★ ギャラリーが開いたタイミングで配置を即時適用
     if (galleryOpen) {
-        btn.style.setProperty('display', 'none', 'important');
-        console.log('[GIC] 📷 ギャラリー表示中 → ギャラリーボタンを非表示');
-    } else {
-        btn.style.removeProperty('display');
-        console.log('[GIC] 📷 ギャラリー非表示 → ギャラリーボタンを再表示');
+        applyGalleryLayout();
     }
 }
 
 function setupGalleryObserverForGic() {
     const observer = new MutationObserver(() => {
         syncGalleryButtonVisibility();
+        applyGalleryLayout();   // ★ 追加: ギャラリーの配置を毎回強制
     });
     observer.observe(document.body, {
         childList: true,
@@ -345,10 +449,14 @@ function setupGalleryObserverForGic() {
     });
 
     // 保険の定期チェック
-    setInterval(syncGalleryButtonVisibility, 300);
+    setInterval(() => {
+        syncGalleryButtonVisibility();
+        applyGalleryLayout();   // ★ 追加
+    }, 300);
 
     // 初回チェック
     syncGalleryButtonVisibility();
+    applyGalleryLayout();       // ★ 追加
 }
 
 // ===== 公式ギャラリーを開く =====
@@ -495,7 +603,7 @@ function createReleaseButton() {
     }, true);
 
     document.body.appendChild(btn);
-    console.log('[GIC] ✅ ボタンを画面左端(bottom:10%)に配置しました');
+    console.log('[GIC] ✅ ボタンを画面左端(bottom:10%-10px)に配置しました');
     setButtonLabel(isOverrideLocal ? LABEL_OVERRIDE : LABEL_NORMAL);
 
     syncButtonVisibilityForTextStyling();
@@ -627,11 +735,13 @@ function initializeGIC() {
         syncGalleryButtonVisibility();
         markGeneratedMessagesInDom();
         positionGalleryButton(); // ラベル幅変更等に追従
+        applyGalleryLayout();    // ギャラリー・プレビューの配置を強制
     }, 1500);
 
     scanForGeneratedImages();
     syncButtonVisibilityForTextStyling();
     syncGalleryButtonVisibility();
+    applyGalleryLayout();
 }
 
 if (document.readyState === 'loading') {
@@ -655,5 +765,6 @@ export async function activate() {
     createReleaseButton();
     createGalleryButton();
     setupGalleryObserverForGic();
+    applyGalleryLayout();
     console.log('[GIC] ✅ Generate Image Controller: アクティベート完了');
 }
