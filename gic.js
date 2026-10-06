@@ -24,7 +24,7 @@ const GALLERY_WINDOW_SELECTORS = [
 
 /**
  * 画像クリック時に表示される拡大パネルのセレクタ。
- * 画面中央に配置し、2倍に拡大する。
+ * 画面中央に配置し、ビューポート内に収まるサイズへ自動調整する。
  */
 const GALLERY_PREVIEW_SELECTORS = [
     '.galleryImageDraggable',
@@ -32,14 +32,18 @@ const GALLERY_PREVIEW_SELECTORS = [
 ];
 
 /**
- * 拡大パネルの倍率（現在の2倍）
+ * 拡大パネルを画面内に収めるときのマージン(px)
  */
-const GALLERY_PREVIEW_SCALE = 2;
+const GALLERY_PREVIEW_MARGIN_X = 40;
+const GALLERY_PREVIEW_MARGIN_Y = 60;
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
 const processedMessageKeys = new Set();
+
+// 現在表示中の拡大パネル（最新のもの）を追跡
+let currentPreviewEl = null;
 
 // ===== 永続化ヘルパー =====
 function loadPersistedState() {
@@ -102,14 +106,14 @@ function savePersistedState() {
             margin: 0 !important;
         }
 
-        /* 画像クリック時の拡大パネル: 画面中央 + 2倍 */
+        /* 画像クリック時の拡大パネル: 画面中央（サイズはJSで動的計算） */
         ${previewSel} {
             position: fixed !important;
             top: 50% !important;
             left: 50% !important;
             right: auto !important;
             bottom: auto !important;
-            transform: translate(-50%, -50%) scale(${GALLERY_PREVIEW_SCALE}) !important;
+            transform: translate(-50%, -50%) !important;
             transform-origin: center center !important;
             margin: 0 !important;
         }
@@ -375,12 +379,100 @@ function isGalleryOpen() {
     return false;
 }
 
-// ===== ギャラリー配置をJS側でも強制 =====
+// ===== ギャラリー配置・プレビュー制御 =====
 
 /**
- * ギャラリーとプレビューの位置・倍率をJSで強制適用する。
- * - 本体がインラインstyleを後から書き換えるケースに対応
- * - CSSは !important で書いてあるが、より確実にするため二重で適用
+ * すべての拡大パネルを取得する
+ */
+function getAllPreviews() {
+    const selector = GALLERY_PREVIEW_SELECTORS.join(', ');
+    return Array.from(document.querySelectorAll(selector));
+}
+
+/**
+ * 拡大パネルを閉じる
+ * - 公式の閉じるボタン(.dragClose)があればクリック
+ * - なければ直接DOMから削除
+ */
+function closePreviewElement(el) {
+    if (!el || !el.parentNode) return;
+    const closeBtn = el.querySelector('.dragClose');
+    if (closeBtn && typeof closeBtn.click === 'function') {
+        try {
+            closeBtn.click();
+            return;
+        } catch (e) {
+            // フォールバックへ
+        }
+    }
+    try { el.remove(); } catch (e) { /* ignore */ }
+}
+
+/**
+ * 拡大パネル内の画像を、縦横比を保ったままビューポート内に収める
+ * - naturalWidth/naturalHeight を基準に倍率を計算
+ * - 画面外にはみ出さない最大サイズに拡大
+ */
+function fitPreviewToViewport(panel) {
+    if (!panel) return;
+
+    // パネル自体を画面中央に固定
+    panel.style.setProperty('position', 'fixed', 'important');
+    panel.style.setProperty('top', '50%', 'important');
+    panel.style.setProperty('left', '50%', 'important');
+    panel.style.setProperty('right', 'auto', 'important');
+    panel.style.setProperty('bottom', 'auto', 'important');
+    panel.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
+    panel.style.setProperty('transform-origin', 'center center', 'important');
+    panel.style.setProperty('margin', '0', 'important');
+    panel.style.setProperty('width', 'auto', 'important');
+    panel.style.setProperty('height', 'auto', 'important');
+
+    const img = panel.querySelector('img');
+    if (!img) return;
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const maxW = Math.max(100, vw - GALLERY_PREVIEW_MARGIN_X * 2);
+    const maxH = Math.max(100, vh - GALLERY_PREVIEW_MARGIN_Y * 2);
+
+    const applySize = () => {
+        const nw = img.naturalWidth || 0;
+        const nh = img.naturalHeight || 0;
+        if (!nw || !nh) return;
+
+        // 縦横比を保ったまま maxW/maxH 内に収まる倍率
+        const scale = Math.min(maxW / nw, maxH / nh);
+        const finalW = Math.max(1, Math.floor(nw * scale));
+        const finalH = Math.max(1, Math.floor(nh * scale));
+
+        img.style.setProperty('width', finalW + 'px', 'important');
+        img.style.setProperty('height', finalH + 'px', 'important');
+        img.style.setProperty('max-width', 'none', 'important');
+        img.style.setProperty('max-height', 'none', 'important');
+        img.style.setProperty('object-fit', 'contain', 'important');
+        img.style.setProperty('display', 'block', 'important');
+    };
+
+    if (img.complete && img.naturalWidth) {
+        applySize();
+    } else {
+        // 読み込み完了後に再実行（多重登録防止）
+        if (img.dataset.gicFitBound !== 'true') {
+            img.dataset.gicFitBound = 'true';
+            img.addEventListener('load', () => {
+                if (document.body.contains(panel)) {
+                    fitPreviewToViewport(panel);
+                }
+            });
+        }
+    }
+}
+
+/**
+ * ギャラリーとプレビューの位置・サイズをJSで強制適用する。
+ * - 最新のプレビューのみを残し、古いものは閉じる
+ * - 最新プレビューをビューポート内に収める
  */
 function applyGalleryLayout() {
     // ギャラリーウィンドウ
@@ -396,20 +488,25 @@ function applyGalleryLayout() {
         el.style.setProperty('margin', '0', 'important');
     }
 
-    // 拡大パネル
-    for (const sel of GALLERY_PREVIEW_SELECTORS) {
-        const els = document.querySelectorAll(sel);
-        els.forEach(el => {
-            el.style.setProperty('position', 'fixed', 'important');
-            el.style.setProperty('top', '50%', 'important');
-            el.style.setProperty('left', '50%', 'important');
-            el.style.setProperty('right', 'auto', 'important');
-            el.style.setProperty('bottom', 'auto', 'important');
-            el.style.setProperty('transform', `translate(-50%, -50%) scale(${GALLERY_PREVIEW_SCALE})`, 'important');
-            el.style.setProperty('transform-origin', 'center center', 'important');
-            el.style.setProperty('margin', '0', 'important');
-        });
+    // 拡大パネル群
+    const previews = getAllPreviews();
+    if (previews.length === 0) {
+        currentPreviewEl = null;
+        return;
     }
+
+    // 最新（DOM順で最後）のみを残す
+    const latest = previews[previews.length - 1];
+    if (latest !== currentPreviewEl) {
+        for (const el of previews) {
+            if (el === latest) continue;
+            closePreviewElement(el);
+        }
+        currentPreviewEl = latest;
+    }
+
+    // 最新の拡大パネルをビューポート内に収める
+    fitPreviewToViewport(latest);
 }
 
 let lastGalleryStateForGic = null;
@@ -439,7 +536,7 @@ function syncGalleryButtonVisibility() {
 function setupGalleryObserverForGic() {
     const observer = new MutationObserver(() => {
         syncGalleryButtonVisibility();
-        applyGalleryLayout();   // ★ 追加: ギャラリーの配置を毎回強制
+        applyGalleryLayout();   // ギャラリー・プレビューの配置を毎回強制
     });
     observer.observe(document.body, {
         childList: true,
@@ -451,12 +548,12 @@ function setupGalleryObserverForGic() {
     // 保険の定期チェック
     setInterval(() => {
         syncGalleryButtonVisibility();
-        applyGalleryLayout();   // ★ 追加
+        applyGalleryLayout();
     }, 300);
 
     // 初回チェック
     syncGalleryButtonVisibility();
-    applyGalleryLayout();       // ★ 追加
+    applyGalleryLayout();
 }
 
 // ===== 公式ギャラリーを開く =====
@@ -734,8 +831,8 @@ function initializeGIC() {
         syncButtonVisibilityForTextStyling();
         syncGalleryButtonVisibility();
         markGeneratedMessagesInDom();
-        positionGalleryButton(); // ラベル幅変更等に追従
-        applyGalleryLayout();    // ギャラリー・プレビューの配置を強制
+        positionGalleryButton();
+        applyGalleryLayout();
     }, 1500);
 
     scanForGeneratedImages();
