@@ -413,10 +413,12 @@ function closePreviewElement(el) {
  * 拡大パネル内の画像を、縦横比を保ったままビューポート内に収める。
  * - naturalWidth/naturalHeight を基準にフィット倍率を計算
  * - さらに GALLERY_PREVIEW_SCALE_MULTIPLIER を掛けて拡大
+ * - パネル自体も画像サイズに合わせてリサイズし、画像全体を表示する
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
 
+    // パネルを画面中央に固定（サイズは後段で決定）
     panel.style.setProperty('position', 'fixed', 'important');
     panel.style.setProperty('top', '50%', 'important');
     panel.style.setProperty('left', '50%', 'important');
@@ -425,8 +427,11 @@ function fitPreviewToViewport(panel) {
     panel.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
     panel.style.setProperty('transform-origin', 'center center', 'important');
     panel.style.setProperty('margin', '0', 'important');
-    panel.style.setProperty('width', 'auto', 'important');
-    panel.style.setProperty('height', 'auto', 'important');
+    panel.style.setProperty('padding', '0', 'important');
+    panel.style.setProperty('box-sizing', 'border-box', 'important');
+    panel.style.setProperty('overflow', 'hidden', 'important');
+    panel.style.setProperty('display', 'flex', 'important');
+    panel.style.setProperty('flex-direction', 'column', 'important');
 
     // 閉じるボタンの拡大をJS側でも強制
     const closeBtn = panel.querySelector('.dragClose');
@@ -451,18 +456,33 @@ function fitPreviewToViewport(panel) {
 
         // 画面内に収める基本倍率
         const fitScale = Math.min(maxW / nw, maxH / nh);
-        // ★ 乗数を掛けてさらに拡大
+        // 乗数を掛けてさらに拡大（画面からはみ出してよい）
         const finalScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
 
         const finalW = Math.max(1, Math.floor(nw * finalScale));
         const finalH = Math.max(1, Math.floor(nh * finalScale));
 
+        // ヘッダ（panelControlBar）の高さを取得
+        const header = panel.querySelector('.panelControlBar');
+        const headerH = header ? header.offsetHeight : 0;
+
+        // ★ パネル自体を画像サイズ + ヘッダ高さにリサイズ
+        panel.style.setProperty('width', finalW + 'px', 'important');
+        panel.style.setProperty('height', (finalH + headerH) + 'px', 'important');
+
+        // ★ img はパネル内でヘッダ下に全体が映るようにサイズ指定
         img.style.setProperty('width', finalW + 'px', 'important');
         img.style.setProperty('height', finalH + 'px', 'important');
         img.style.setProperty('max-width', 'none', 'important');
         img.style.setProperty('max-height', 'none', 'important');
         img.style.setProperty('object-fit', 'contain', 'important');
         img.style.setProperty('display', 'block', 'important');
+        img.style.setProperty('flex', '0 0 auto', 'important');
+
+        // ヘッダがフレックスで潰れないように
+        if (header) {
+            header.style.setProperty('flex', '0 0 auto', 'important');
+        }
     };
 
     if (img.complete && img.naturalWidth) {
