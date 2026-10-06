@@ -14,18 +14,10 @@ const HIDDEN_MES_CLASS = 'gic-hidden-message';
 
 // ===== ギャラリー配置カスタマイズ用定数 =====
 
-/**
- * 公式ギャラリーウィンドウのセレクタ。
- * 画面左端・高さ中央に配置する。
- */
 const GALLERY_WINDOW_SELECTORS = [
     '#gallery',
 ];
 
-/**
- * 画像クリック時に表示される拡大パネルのセレクタ。
- * 画面中央に配置し、ビューポート内に収まるサイズへ自動調整する。
- */
 const GALLERY_PREVIEW_SELECTORS = [
     '.galleryImageDraggable',
     '#gallery .galleryImageDraggable',
@@ -33,16 +25,16 @@ const GALLERY_PREVIEW_SELECTORS = [
 
 /**
  * 拡大パネルを画面内に収めるときのマージン(px)
- * 0 にすることで画面いっぱいまで拡大
  */
 const GALLERY_PREVIEW_MARGIN_X = 0;
 const GALLERY_PREVIEW_MARGIN_Y = 0;
 
 /**
  * フィット計算の結果に掛ける倍率乗数。
- * 大きくするほどプレビューが大きくなる（画面からはみ出してよい）
+ * - 1.0 で「ビューポート内にぴったり」
+ * - 1.3 で「ぴったりより 30% 大きい」
  */
-const GALLERY_PREVIEW_SCALE_MULTIPLIER = 2.0;
+const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
 /**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
@@ -50,14 +42,12 @@ const GALLERY_PREVIEW_SCALE_MULTIPLIER = 2.0;
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 
 /**
- * ギャラリーウィンドウの高さを広げる合計量(px)。
- * 上下 50px ずつ → 合計 100px。
+ * ギャラリーウィンドウの高さを増やす量(px)。上下に分かれて広がる。
  */
 const GALLERY_WINDOW_HEIGHT_DELTA = 100;
 
 /**
- * ギャラリー下部ページネーションボタンの縦幅(px)。
- * 元の約4倍を想定。
+ * ギャラリー下部ページネーションボタンの縦幅(px)
  */
 const GALLERY_PAGINATION_HEIGHT = 40;
 
@@ -66,8 +56,10 @@ let lastGeneratedImageUrl = null;
 let isOverrideLocal = false;
 const processedMessageKeys = new Set();
 
-// 現在表示中の拡大パネル（最新のもの）を追跡
 let currentPreviewEl = null;
+
+// ギャラリー要素ごとの「ST本来の高さ」を記録（ギャラリーを閉じたらクリア）
+const galleryBaseHeightCache = new WeakMap();
 
 // ===== 永続化ヘルパー =====
 function loadPersistedState() {
@@ -96,7 +88,7 @@ function savePersistedState() {
     }
 }
 
-// ===== スタイル注入（クラスで非表示にするためのCSS） =====
+// ===== スタイル注入 =====
 (function injectGicStyle() {
     if (document.getElementById('gic-injected-style')) return;
     const style = document.createElement('style');
@@ -109,7 +101,6 @@ function savePersistedState() {
     document.head.appendChild(style);
 })();
 
-// ===== ギャラリー配置用CSS注入 =====
 (function injectGalleryLayoutStyle() {
     if (document.getElementById('gic-gallery-layout-style')) return;
     const style = document.createElement('style');
@@ -119,17 +110,6 @@ function savePersistedState() {
     const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
 
     style.textContent = `
-        /* ギャラリーウィンドウ: 画面左端・高さ中央 */
-        ${windowSel} {
-            position: fixed !important;
-            top: 50% !important;
-            left: 0 !important;
-            right: auto !important;
-            bottom: auto !important;
-            transform: translateY(-50%) !important;
-            margin: 0 !important;
-        }
-
         /* 画像クリック時の拡大パネル: 画面中央（サイズはJSで動的計算） */
         ${previewSel} {
             position: fixed !important;
@@ -142,14 +122,12 @@ function savePersistedState() {
             margin: 0 !important;
         }
 
-        /* 拡大パネルの閉じるボタンを ${GALLERY_PREVIEW_CLOSE_SCALE} 倍に */
         ${previewSel} .dragClose {
             transform: scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
             transform-origin: top right !important;
             display: inline-block !important;
         }
 
-        /* ギャラリー下部のページネーションボタンの縦幅を ${GALLERY_PAGINATION_HEIGHT}px に */
         .nGY2GalleryBottom {
             display: flex !important;
             align-items: center !important;
@@ -194,7 +172,7 @@ function setButtonLabel(label) {
     }
 }
 
-// ===== DOMマーキング（パス非依存のCSSフォールバック用） =====
+// ===== DOMマーキング =====
 
 function markGeneratedMessagesInDom() {
     const context = getContext();
@@ -251,7 +229,7 @@ function setupTextStylingObserver() {
     console.log('[GIC] 📝 Text_stylingパネル監視を開始しました');
 }
 
-// ===== 生成画像のスキャン（リロード後の状態復元を含む） =====
+// ===== 生成画像のスキャン =====
 
 async function scanForGeneratedImages() {
     const context = getContext();
@@ -433,42 +411,43 @@ function closePreviewElement(el) {
 }
 
 /**
- * ギャラリーウィンドウの高さを「自然な高さ + GALLERY_WINDOW_HEIGHT_DELTA」に拡張する。
- * - 上下 50px ずつ、合計 100px 拡張（中央配置なので自然に上下へ広がる）
- * - 目標高さは要素ごとに一度だけ計算し、dataset に保存して再計算を防ぐ
+ * ギャラリーウィンドウの配置と高さを適用する。
+ * - 位置: 画面左端・高さ中央
+ * - 高さ: ギャラリーが最初に表示された瞬間の「ST本来の高さ」を1回だけ測り、
+ *         それに GALLERY_WINDOW_HEIGHT_DELTA を足した値を保持して適用する。
+ *         （ギャラリーを閉じるとキャッシュをクリアし、次回開いた時に再測定）
  */
-function expandGalleryWindow() {
+function applyGalleryWindowLayout() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
         if (!el) continue;
 
-        // 目標高さが未計算なら計測
-        if (!el.dataset.gicTargetHeight) {
-            // 自前の height 指定を一時退避
-            const savedHeight = el.style.getPropertyValue('height');
-            const savedMin    = el.style.getPropertyValue('min-height');
-            const savedMax    = el.style.getPropertyValue('max-height');
+        // 位置だけ先に確定（高さには触れない）
+        el.style.setProperty('position', 'fixed', 'important');
+        el.style.setProperty('top', '50%', 'important');
+        el.style.setProperty('left', '0', 'important');
+        el.style.setProperty('right', 'auto', 'important');
+        el.style.setProperty('bottom', 'auto', 'important');
+        el.style.setProperty('transform', 'translateY(-50%)', 'important');
+        el.style.setProperty('margin', '0', 'important');
 
-            el.style.removeProperty('height');
-            el.style.removeProperty('min-height');
-            el.style.removeProperty('max-height');
-
-            const naturalH = el.offsetHeight;
-
-            // 復元
-            if (savedHeight) el.style.setProperty('height', savedHeight);
-            if (savedMin) el.style.setProperty('min-height', savedMin);
-            if (savedMax) el.style.setProperty('max-height', savedMax);
-
-            if (naturalH > 0) {
-                el.dataset.gicTargetHeight = String(naturalH + GALLERY_WINDOW_HEIGHT_DELTA);
+        // ST本来の高さをまだ測っていない場合のみ測定
+        if (!galleryBaseHeightCache.has(el)) {
+            // まだ自前の height は当てていないので、getBoundingClientRect がそのまま ST 描画サイズ
+            const h = el.getBoundingClientRect().height;
+            if (h > 0) {
+                galleryBaseHeightCache.set(el, h);
+                const targetH = Math.round(h + GALLERY_WINDOW_HEIGHT_DELTA);
+                console.log(`[GIC] ギャラリー高さ: ST本来=${Math.round(h)}px → 目標=${targetH}px`);
             } else {
-                // 非表示状態などで測れない場合はスキップ
+                // まだ表示されていない or 高さ0 → 次回以降に計測
                 continue;
             }
         }
 
-        const targetH = el.dataset.gicTargetHeight + 'px';
+        // 目標高さを適用
+        const base = galleryBaseHeightCache.get(el);
+        const targetH = Math.round(base + GALLERY_WINDOW_HEIGHT_DELTA) + 'px';
         el.style.setProperty('height', targetH, 'important');
         el.style.setProperty('min-height', targetH, 'important');
         el.style.setProperty('max-height', targetH, 'important');
@@ -476,10 +455,24 @@ function expandGalleryWindow() {
 }
 
 /**
- * 拡大パネルを、縦横比を保ったままビューポート内に収める。
- * - ST 側が width/height/overflow を !important で固定しているため
- *   transform: scale() で見た目のみ拡大する
- * - 画像は natural サイズでパネルに組ませ、パネル全体を scale する
+ * ギャラリーが閉じたときに高さキャッシュをクリア。
+ * 次回開いた時に新しく ST 本来の高さを測り直す。
+ */
+function resetGalleryHeightCache() {
+    for (const sel of GALLERY_WINDOW_SELECTORS) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        if (galleryBaseHeightCache.has(el)) {
+            galleryBaseHeightCache.delete(el);
+            console.log('[GIC] ギャラリー高さキャッシュをリセット');
+        }
+    }
+}
+
+/**
+ * 拡大パネルを transform: scale() で拡大する。
+ * - パネルは natural サイズで組ませ、パネル全体を scale する
+ * - ST 側の width/height/overflow !important の影響を受けない
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -488,7 +481,6 @@ function fitPreviewToViewport(panel) {
     const header = panel.querySelector('.panelControlBar');
     if (!img) return;
 
-    // --- パネル配置 ---
     panel.style.setProperty('position', 'fixed', 'important');
     panel.style.setProperty('top', '50%', 'important');
     panel.style.setProperty('left', '50%', 'important');
@@ -502,7 +494,6 @@ function fitPreviewToViewport(panel) {
     panel.style.setProperty('flex-direction', 'column', 'important');
     panel.style.setProperty('transform-origin', 'center center', 'important');
 
-    // --- 閉じるボタン ---
     const closeBtn = panel.querySelector('.dragClose');
     if (closeBtn) {
         closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
@@ -510,7 +501,6 @@ function fitPreviewToViewport(panel) {
         closeBtn.style.setProperty('display', 'inline-block', 'important');
     }
 
-    // --- ヘッダが潰れないように ---
     if (header) {
         header.style.setProperty('flex', '0 0 auto', 'important');
     }
@@ -520,7 +510,6 @@ function fitPreviewToViewport(panel) {
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        // img を natural サイズに（パネルがこれに合わせて自然に広がる）
         img.style.setProperty('width', nw + 'px', 'important');
         img.style.setProperty('height', nh + 'px', 'important');
         img.style.setProperty('max-width', 'none', 'important');
@@ -529,13 +518,11 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // パネルを natural サイズに
         panel.style.setProperty('width', 'auto', 'important');
         panel.style.setProperty('height', 'auto', 'important');
         panel.style.setProperty('max-width', 'none', 'important');
         panel.style.setProperty('max-height', 'none', 'important');
 
-        // レイアウト確定後に transform: scale を計算
         requestAnimationFrame(() => {
             const pw = panel.offsetWidth;
             const ph = panel.offsetHeight;
@@ -568,27 +555,11 @@ function fitPreviewToViewport(panel) {
     }
 }
 
-/**
- * ギャラリーとプレビューの位置・サイズをJSで強制適用する。
- */
 function applyGalleryLayout() {
-    // ギャラリーウィンドウ
-    for (const sel of GALLERY_WINDOW_SELECTORS) {
-        const el = document.querySelector(sel);
-        if (!el) continue;
-        el.style.setProperty('position', 'fixed', 'important');
-        el.style.setProperty('top', '50%', 'important');
-        el.style.setProperty('left', '0', 'important');
-        el.style.setProperty('right', 'auto', 'important');
-        el.style.setProperty('bottom', 'auto', 'important');
-        el.style.setProperty('transform', 'translateY(-50%)', 'important');
-        el.style.setProperty('margin', '0', 'important');
-    }
+    // ★ ギャラリーウィンドウ（位置・高さ）
+    applyGalleryWindowLayout();
 
-    // ★ ギャラリーウィンドウの高さ拡張（上下 50px ずつ）
-    expandGalleryWindow();
-
-    // ★ ページネーションボタンの縦幅を強制
+    // ページネーションボタンの縦幅を強制
     document.querySelectorAll(
         '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
     ).forEach(el => {
@@ -636,6 +607,9 @@ function syncGalleryButtonVisibility() {
 
     if (galleryOpen) {
         applyGalleryLayout();
+    } else {
+        // ★ ギャラリーが閉じた → 次回のために高さキャッシュをクリア
+        resetGalleryHeightCache();
     }
 }
 
