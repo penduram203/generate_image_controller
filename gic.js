@@ -1,4 +1,4 @@
-import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
+import { eventSource, event_types, saveChat, printMessages } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 
 console.log('[GIC] モジュールロード開始');
