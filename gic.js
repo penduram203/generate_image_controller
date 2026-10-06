@@ -430,7 +430,7 @@ function createReleaseButton() {
     Object.assign(btn.style, {
         position: 'fixed',
         left: '0',
-        bottom: '10%',
+        bottom: 'calc(10% - 10px)',
         zIndex: '15000',
         padding: '6px 12px',
         fontSize: '12px',
@@ -519,7 +519,7 @@ function createGalleryButton() {
     Object.assign(btn.style, {
         position: 'fixed',
         left: '0',           // positionGalleryButton() で動的に更新
-        bottom: '10%',
+        bottom: 'calc(10% - 10px)',
         zIndex: '15000',
         padding: '6px 12px',
         fontSize: '12px',
