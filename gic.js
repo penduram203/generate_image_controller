@@ -32,7 +32,6 @@ const GALLERY_PREVIEW_MARGIN_Y = 0;
 /**
  * フィット計算の結果に掛ける倍率乗数。
  * - 1.0 で「ビューポート内にぴったり」
- * - 1.3 で「ぴったりより 30% 大きい」
  */
 const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
@@ -106,7 +105,6 @@ function savePersistedState() {
     const style = document.createElement('style');
     style.id = 'gic-gallery-layout-style';
 
-    const windowSel = GALLERY_WINDOW_SELECTORS.join(', ');
     const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
 
     style.textContent = `
@@ -138,6 +136,25 @@ function savePersistedState() {
             height: ${GALLERY_PAGINATION_HEIGHT}px !important;
             min-height: ${GALLERY_PAGINATION_HEIGHT}px !important;
             max-height: ${GALLERY_PAGINATION_HEIGHT}px !important;
+            position: relative !important;
+        }
+
+        /* ページ番号: 太字 + 黒文字 + 白い縁取り */
+        .gic-page-number {
+            position: absolute !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            font-weight: bold !important;
+            font-size: 16px !important;
+            color: #000000 !important;
+            -webkit-text-stroke: 3px #ffffff !important;
+            paint-order: stroke fill !important;
+            pointer-events: none !important;
+            z-index: 10 !important;
+            line-height: 1 !important;
+            user-select: none !important;
+            font-family: sans-serif !important;
         }
     `;
     document.head.appendChild(style);
@@ -433,14 +450,12 @@ function applyGalleryWindowLayout() {
 
         // ST本来の高さをまだ測っていない場合のみ測定
         if (!galleryBaseHeightCache.has(el)) {
-            // まだ自前の height は当てていないので、getBoundingClientRect がそのまま ST 描画サイズ
             const h = el.getBoundingClientRect().height;
             if (h > 0) {
                 galleryBaseHeightCache.set(el, h);
                 const targetH = Math.round(h + GALLERY_WINDOW_HEIGHT_DELTA);
                 console.log(`[GIC] ギャラリー高さ: ST本来=${Math.round(h)}px → 目標=${targetH}px`);
             } else {
-                // まだ表示されていない or 高さ0 → 次回以降に計測
                 continue;
             }
         }
@@ -456,7 +471,6 @@ function applyGalleryWindowLayout() {
 
 /**
  * ギャラリーが閉じたときに高さキャッシュをクリア。
- * 次回開いた時に新しく ST 本来の高さを測り直す。
  */
 function resetGalleryHeightCache() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
@@ -470,9 +484,41 @@ function resetGalleryHeightCache() {
 }
 
 /**
+ * ギャラリー下部のページネーションボタンに番号を振る。
+ * - 表示されているボタンのみを左から 1, 2, 3, ... と採番
+ * - 既存の番号スパンは削除してから再挿入（位置ずれ・重複防止）
+ */
+function applyPageNumbers() {
+    const container = document.querySelector('.nGY2GalleryBottom');
+    if (!container) return;
+
+    const dots = container.querySelectorAll(
+        '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
+    );
+
+    let visibleIndex = 0;
+    dots.forEach(dot => {
+        // 既存の番号を削除
+        const existing = dot.querySelector('.gic-page-number');
+        if (existing) existing.remove();
+
+        // 表示されているか判定
+        const cs = getComputedStyle(dot);
+        if (cs.display === 'none') return;
+        if (cs.visibility === 'hidden') return;
+        if (parseFloat(cs.opacity) === 0) return;
+
+        visibleIndex++;
+
+        const span = document.createElement('span');
+        span.className = 'gic-page-number';
+        span.textContent = String(visibleIndex);
+        dot.appendChild(span);
+    });
+}
+
+/**
  * 拡大パネルを transform: scale() で拡大する。
- * - パネルは natural サイズで組ませ、パネル全体を scale する
- * - ST 側の width/height/overflow !important の影響を受けない
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -556,7 +602,7 @@ function fitPreviewToViewport(panel) {
 }
 
 function applyGalleryLayout() {
-    // ★ ギャラリーウィンドウ（位置・高さ）
+    // ギャラリーウィンドウ（位置・高さ）
     applyGalleryWindowLayout();
 
     // ページネーションボタンの縦幅を強制
@@ -566,7 +612,11 @@ function applyGalleryLayout() {
         el.style.setProperty('height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
         el.style.setProperty('min-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
         el.style.setProperty('max-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+        el.style.setProperty('position', 'relative', 'important');
     });
+
+    // ★ ページ番号を振る
+    applyPageNumbers();
 
     // 拡大パネル群
     const previews = getAllPreviews();
@@ -608,7 +658,6 @@ function syncGalleryButtonVisibility() {
     if (galleryOpen) {
         applyGalleryLayout();
     } else {
-        // ★ ギャラリーが閉じた → 次回のために高さキャッシュをクリア
         resetGalleryHeightCache();
     }
 }
