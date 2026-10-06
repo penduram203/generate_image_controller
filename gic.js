@@ -138,6 +138,19 @@ function savePersistedState() {
             transform-origin: top right !important;
             display: inline-block !important;
         }
+
+        /* ギャラリー下部のページネーションボタンの縦幅を4倍に */
+        .nGY2GalleryBottom {
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+        }
+        .nGY2paginationRectangle,
+        .nGY2paginationRectangleCurrentPage {
+            height: 40px !important;
+            min-height: 40px !important;
+            max-height: 40px !important;
+        }
     `;
     document.head.appendChild(style);
     console.log('[GIC] 🖼️ ギャラリー配置CSSを注入しました');
