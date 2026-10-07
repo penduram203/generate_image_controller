@@ -32,7 +32,7 @@ const GALLERY_PREVIEW_MARGIN_Y = 0;
 const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
 /**
- * プレビューウィンドウの横幅の上限(px)。これ以上は広がらない。
+ * プレビュー画像の横幅上限(px)。これを超えて広がらない。
  */
 const GALLERY_PREVIEW_MAX_WIDTH = 1440;
 
@@ -120,17 +120,20 @@ function savePersistedState() {
     const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
 
     style.textContent = `
-        /* 画像クリック時の拡大パネル: 位置はJSで動的制御 */
+        /* 画像クリック時の拡大パネル:
+         * - 左端をギャラリー右端に合わせる（left はJSで設定）
+         * - 垂直方向は中央（translateY(-50%)）
+         * - scale は使わず width/height を直接指定
+         * - レイアウト確定までは visibility: hidden でフラッシュ防止 */
         ${previewSel} {
             position: fixed !important;
             top: 50% !important;
-            left: 50% !important;
+            left: 0 !important;
             right: auto !important;
             bottom: auto !important;
-            transform: translate(-50%, -50%) !important;
-            transform-origin: center center !important;
+            transform: translateY(-50%) !important;
+            transform-origin: left center !important;
             margin: 0 !important;
-            /* ★ レイアウト調整完了まで非表示（フラッシュ防止） */
             visibility: hidden !important;
         }
 
@@ -248,6 +251,8 @@ function syncButtonVisibilityForTextStyling() {
 }
 
 function setupTextStylingObserver() {
+    // body 全体の MutationObserver は style/class の書き込みで
+    // フィードバックループを起こすため、軽量な定期チェックのみで運用する。
     setInterval(syncButtonVisibilityForTextStyling, 300);
     console.log('[GIC] 📝 Text_stylingパネル監視を開始しました（ポーリング方式）');
 }
@@ -394,6 +399,7 @@ function isGalleryOpen() {
 
     let result = false;
 
+    // 最優先: #gallery を直接チェック
     const primary = document.getElementById('gallery');
     if (primary) {
         const style = window.getComputedStyle(primary);
@@ -407,6 +413,7 @@ function isGalleryOpen() {
         }
     }
 
+    // フォールバック（滅多にヒットしない）
     if (!result) {
         const candidates = document.querySelectorAll([
             '#gallery_container',
@@ -456,6 +463,9 @@ function closePreviewElement(el) {
     try { el.remove(); } catch (e) { /* ignore */ }
 }
 
+/**
+ * ギャラリーウィンドウの配置と高さを適用する。
+ */
 function applyGalleryWindowLayout() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
@@ -481,6 +491,7 @@ function applyGalleryWindowLayout() {
         const base = galleryBaseHeightCache.get(el);
         const desired = Math.round(base + GALLERY_WINDOW_HEIGHT_DELTA);
 
+        // ビューポートからはみ出さないようクランプ
         const vh = window.innerHeight;
         const maxAllowed = Math.max(100, vh - GALLERY_WINDOW_MAX_VIEWPORT_MARGIN * 2);
         const targetH = Math.min(desired, maxAllowed);
@@ -510,6 +521,9 @@ function resetGalleryHeightCache() {
     }
 }
 
+/**
+ * ギャラリー下部のページネーションボタンに番号を振る（冪等）。
+ */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
@@ -546,10 +560,12 @@ function applyPageNumbers() {
 }
 
 /**
- * 拡大パネルを transform: scale() で拡大する。
- * - 横幅の上限 GALLERY_PREVIEW_MAX_WIDTH を超えない
- * - 右端をギャラリーウィンドウの左端に一致させる
- * - CSS側で visibility: hidden にしてあるため、位置とサイズが整うまで見えない
+ * 拡大パネルを所定の位置・サイズに整える。
+ * - 左端: ギャラリーウィンドウの右端
+ * - 垂直: 中央
+ * - 横幅: 最大 GALLERY_PREVIEW_MAX_WIDTH px
+ * - 高さ: ビューポート内に収まる範囲
+ * - transform: scale は使わず width / height を直接指定
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -558,18 +574,7 @@ function fitPreviewToViewport(panel) {
     const header = panel.querySelector('.panelControlBar');
     if (!img) return;
 
-    panel.style.setProperty('position', 'fixed', 'important');
-    panel.style.setProperty('top', '50%', 'important');
-    panel.style.setProperty('left', '50%', 'important');
-    panel.style.setProperty('right', 'auto', 'important');
-    panel.style.setProperty('bottom', 'auto', 'important');
-    panel.style.setProperty('margin', '0', 'important');
-    panel.style.setProperty('padding', '0', 'important');
-    panel.style.setProperty('box-sizing', 'border-box', 'important');
-    panel.style.setProperty('overflow', 'visible', 'important');
-    panel.style.setProperty('display', 'flex', 'important');
-    panel.style.setProperty('flex-direction', 'column', 'important');
-
+    // 閉じるボタンの拡大をJS側でも強制
     const closeBtn = panel.querySelector('.dragClose');
     if (closeBtn) {
         closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
@@ -577,6 +582,7 @@ function fitPreviewToViewport(panel) {
         closeBtn.style.setProperty('display', 'inline-block', 'important');
     }
 
+    // ヘッダが潰れないように
     if (header) {
         header.style.setProperty('flex', '0 0 auto', 'important');
     }
@@ -586,61 +592,63 @@ function fitPreviewToViewport(panel) {
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        img.style.setProperty('width', nw + 'px', 'important');
-        img.style.setProperty('height', nh + 'px', 'important');
+        // ギャラリーウィンドウの右端を取得
+        const galleryEl = document.getElementById('gallery');
+        let galleryRight = 0;
+        if (galleryEl) {
+            const gr = galleryEl.getBoundingClientRect();
+            galleryRight = Math.round(gr.right);
+        }
+
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        // ギャラリー右端からビューポート右端までの使える幅
+        const availableW = Math.max(100, vw - galleryRight - GALLERY_PREVIEW_MARGIN_X);
+        const availableH = Math.max(100, vh - GALLERY_PREVIEW_MARGIN_Y * 2);
+
+        // 画面内に収める基本倍率
+        const fitScale = Math.min(availableW / nw, availableH / nh);
+        const desiredScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
+
+        // 横幅上限 GALLERY_PREVIEW_MAX_WIDTH による倍率の制約
+        const maxScaleByWidth = GALLERY_PREVIEW_MAX_WIDTH / nw;
+
+        const finalScale = Math.min(desiredScale, maxScaleByWidth);
+
+        const finalW = Math.max(1, Math.floor(nw * finalScale));
+        const finalH = Math.max(1, Math.floor(nh * finalScale));
+
+        // --- パネル位置・サイズ（scaleは使わない） ---
+        panel.style.setProperty('position', 'fixed', 'important');
+        panel.style.setProperty('left', galleryRight + 'px', 'important');
+        panel.style.setProperty('top', '50%', 'important');
+        panel.style.setProperty('right', 'auto', 'important');
+        panel.style.setProperty('bottom', 'auto', 'important');
+        panel.style.setProperty('transform', 'translateY(-50%)', 'important');
+        panel.style.setProperty('transform-origin', 'left center', 'important');
+        panel.style.setProperty('margin', '0', 'important');
+        panel.style.setProperty('padding', '0', 'important');
+        panel.style.setProperty('box-sizing', 'border-box', 'important');
+        panel.style.setProperty('overflow', 'visible', 'important');
+        panel.style.setProperty('display', 'flex', 'important');
+        panel.style.setProperty('flex-direction', 'column', 'important');
+        panel.style.setProperty('width', finalW + 'px', 'important');
+        panel.style.setProperty('height', 'auto', 'important');
+        panel.style.setProperty('max-width', 'none', 'important');
+        panel.style.setProperty('max-height', 'none', 'important');
+
+        // --- 画像サイズ ---
+        img.style.setProperty('width', finalW + 'px', 'important');
+        img.style.setProperty('height', finalH + 'px', 'important');
         img.style.setProperty('max-width', 'none', 'important');
         img.style.setProperty('max-height', 'none', 'important');
         img.style.setProperty('object-fit', 'contain', 'important');
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        panel.style.setProperty('width', 'auto', 'important');
-        panel.style.setProperty('height', 'auto', 'important');
-        panel.style.setProperty('max-width', 'none', 'important');
-        panel.style.setProperty('max-height', 'none', 'important');
-
-        requestAnimationFrame(() => {
-            const pw = panel.offsetWidth;
-            const ph = panel.offsetHeight;
-            if (!pw || !ph) return;
-
-            const vw = window.innerWidth;
-            const vh = window.innerHeight;
-
-            // 横幅の上限: 1440px または viewport 幅の小さい方
-            const maxPreviewWidth = Math.min(GALLERY_PREVIEW_MAX_WIDTH, vw);
-
-            // 縦横それぞれのフィット倍率を計算
-            const fitScale = Math.min(maxPreviewWidth / pw, vh / ph);
-            const scaledScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
-
-            // 乗数適用後も 1440px を超えないよう最終クランプ
-            const maxScaleByWidth = GALLERY_PREVIEW_MAX_WIDTH / pw;
-            const finalScale = Math.min(scaledScale, maxScaleByWidth);
-
-            // ギャラリーウィンドウの左端 X 座標を取得
-            const galleryEl = document.querySelector('#gallery');
-            const galleryLeft = galleryEl
-                ? Math.round(galleryEl.getBoundingClientRect().left)
-                : 0;
-
-            // プレビューの右端をギャラリーの左端に一致させる:
-            //   left をギャラリー左端に設定
-            //   transform-origin: right center で右端を固定点に
-            //   translate(-100%, -50%) で要素の右端をその基準点に置く
-            panel.style.setProperty('left', galleryLeft + 'px', 'important');
-            panel.style.setProperty('top', '50%', 'important');
-            panel.style.setProperty('right', 'auto', 'important');
-            panel.style.setProperty('transform-origin', 'right center', 'important');
-            panel.style.setProperty(
-                'transform',
-                `translate(-100%, -50%) scale(${finalScale})`,
-                'important'
-            );
-
-            // 位置とサイズが整った後に初めて可視化（フラッシュ防止）
-            panel.style.setProperty('visibility', 'visible', 'important');
-        });
+        // --- 可視化（位置・サイズ確定後） ---
+        panel.style.setProperty('visibility', 'visible', 'important');
     };
 
     if (img.complete && img.naturalWidth) {
@@ -721,6 +729,7 @@ function syncGalleryButtonVisibility() {
 }
 
 function setupGalleryObserverForGic() {
+    // MutationObserver は撤去。300ms ポーリングのみで開閉検知には十分。
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
