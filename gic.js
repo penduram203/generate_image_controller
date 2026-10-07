@@ -102,13 +102,14 @@ function savePersistedState() {
     const style = document.createElement('style');
     style.id = 'gic-gallery-layout-style';
 
-    // ★ セレクタを個別に展開（カンマ結合による意図しないマッチを防ぐ）
     const panelSel      = GALLERY_PREVIEW_SELECTORS.join(', ');
     const closeSel      = GALLERY_PREVIEW_SELECTORS.map(s => `${s} .dragClose`).join(', ');
     const closeHoverSel = GALLERY_PREVIEW_SELECTORS.map(s => `${s}:hover .dragClose`).join(', ');
 
     style.textContent = `
-        /* プレビューパネル */
+        /* プレビューパネル
+         * transform が当たっているため、この要素が position: fixed 子要素の
+         * containing block になる。よって .dragClose は left:0 でパネル左端を指す。 */
         ${panelSel} {
             position: fixed !important;
             top: 50% !important;
@@ -122,10 +123,12 @@ function savePersistedState() {
         }
 
         /* 閉じるボタン: 通常は非表示
-         * - position: fixed（left/top は JS で設定）
-         * - transform-origin: left center で左基点に拡大 */
+         * - position: fixed だが、transform 祖先（パネル）が containing block になる
+         * - そのため left/top はパネル基準で指定する（ビューポート座標は使わない） */
         ${closeSel} {
             position: fixed !important;
+            left: 0 !important;
+            top: 50% !important;
             transform: translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
             transform-origin: left center !important;
             display: inline-block !important;
@@ -136,7 +139,6 @@ function savePersistedState() {
             margin: 0 !important;
         }
 
-        /* パネルにホバーで表示（:hover は DOM 子孫に対しても発火する） */
         ${closeHoverSel} {
             opacity: 1 !important;
             pointer-events: auto !important;
@@ -700,22 +702,21 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // ★ 閉じるボタンをパネルの左端・高さ中央に固定配置
+        // ★ 閉じるボタンはパネル基準で配置する。
+        //   パネルに transform が当たっているため、その子孫である
+        //   .dragClose の position: fixed はパネルを containing block とする。
+        //   したがって left/top はパネル内座標で指定する（ビューポート座標ではない）。
         if (closeBtn) {
-            requestAnimationFrame(() => {
-                const pr = panel.getBoundingClientRect();
-                if (pr.width > 0 && pr.height > 0) {
-                    closeBtn.style.setProperty('position', 'fixed', 'important');
-                    closeBtn.style.setProperty('left', Math.round(pr.left) + 'px', 'important');
-                    closeBtn.style.setProperty('top', Math.round(pr.top + pr.height / 2) + 'px', 'important');
-                    closeBtn.style.setProperty(
-                        'transform',
-                        `translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE})`,
-                        'important'
-                    );
-                    closeBtn.style.setProperty('transform-origin', 'left center', 'important');
-                }
-            });
+            closeBtn.style.setProperty('position', 'fixed', 'important');
+            closeBtn.style.setProperty('left', '0', 'important');
+            closeBtn.style.setProperty('top', '50%', 'important');
+            closeBtn.style.setProperty(
+                'transform',
+                `translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE})`,
+                'important'
+            );
+            closeBtn.style.setProperty('transform-origin', 'left center', 'important');
+            closeBtn.style.setProperty('margin', '0', 'important');
         }
     };
 
