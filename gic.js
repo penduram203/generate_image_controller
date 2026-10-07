@@ -23,15 +23,11 @@ const GALLERY_PREVIEW_SELECTORS = [
     '#gallery .galleryImageDraggable',
 ];
 
-/**
- * 拡大パネルを画面内に収めるときのマージン(px)
- */
 const GALLERY_PREVIEW_MARGIN_X = 0;
 const GALLERY_PREVIEW_MARGIN_Y = 0;
 
 /**
- * フィット計算の結果に掛ける倍率乗数。
- * - 1.0 で「ビューポート内にぴったり」
+ * フィット計算の結果に掛ける倍率乗数。1.0 でビューポートにぴったり。
  */
 const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
@@ -41,7 +37,7 @@ const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 
 /**
- * ギャラリーウィンドウの高さを増やす量(px)。上下に分かれて広がる。
+ * ギャラリーウィンドウの高さを増やす量(px)。
  */
 const GALLERY_WINDOW_HEIGHT_DELTA = 600;
 
@@ -56,9 +52,14 @@ let isOverrideLocal = false;
 const processedMessageKeys = new Set();
 
 let currentPreviewEl = null;
+let isApplyingLayout = false;
 
 // ギャラリー要素ごとの「ST本来の高さ」を記録（ギャラリーを閉じたらクリア）
 const galleryBaseHeightCache = new WeakMap();
+
+// ギャラリー開閉判定のキャッシュ（重いDOM読みを毎回呼ばない）
+let _galleryOpenCache = { value: false, timestamp: 0 };
+const GALLERY_OPEN_CACHE_TTL = 100; // ms
 
 // ===== 永続化ヘルパー =====
 function loadPersistedState() {
@@ -234,16 +235,10 @@ function syncButtonVisibilityForTextStyling() {
 }
 
 function setupTextStylingObserver() {
-    const observer = new MutationObserver(() => {
-        syncButtonVisibilityForTextStyling();
-    });
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['style', 'class'],
-    });
-    console.log('[GIC] 📝 Text_stylingパネル監視を開始しました');
+    // body 全体の MutationObserver は style/class の書き込みで
+    // フィードバックループを起こすため、軽量な定期チェックのみで運用する。
+    setInterval(syncButtonVisibilityForTextStyling, 300);
+    console.log('[GIC] 📝 Text_stylingパネル監視を開始しました（ポーリング方式）');
 }
 
 // ===== 生成画像のスキャン =====
@@ -378,32 +373,57 @@ function positionGalleryButton() {
     galleryBtn.style.left = (w + 4) + 'px';
 }
 
-// ===== 公式ギャラリーの開閉検知 =====
+// ===== 公式ギャラリーの開閉検知（キャッシュ付き） =====
 
 function isGalleryOpen() {
-    const candidates = document.querySelectorAll([
-        '#gallery_container',
-        '.gallery-container',
-        '.gallery_container',
-        '#gallery',
-        '.gallery',
-        '[data-gallery-container]',
-        '.gallery-grid',
-        '#gallery-grid',
-    ].join(','));
-
-    for (const el of candidates) {
-        if (!el) continue;
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none') continue;
-        if (style.visibility === 'hidden') continue;
-        if (parseFloat(style.opacity) === 0) continue;
-        if (el.offsetParent === null && style.position !== 'fixed') continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        return true;
+    const now = performance.now();
+    if (now - _galleryOpenCache.timestamp < GALLERY_OPEN_CACHE_TTL) {
+        return _galleryOpenCache.value;
     }
-    return false;
+
+    let result = false;
+
+    // 最優先: #gallery を直接チェック
+    const primary = document.getElementById('gallery');
+    if (primary) {
+        const style = window.getComputedStyle(primary);
+        if (style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            parseFloat(style.opacity) !== 0) {
+            const rect = primary.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                result = true;
+            }
+        }
+    }
+
+    // フォールバック（滅多にヒットしない）
+    if (!result) {
+        const candidates = document.querySelectorAll([
+            '#gallery_container',
+            '.gallery-container',
+            '.gallery_container',
+            '.gallery',
+            '[data-gallery-container]',
+            '.gallery-grid',
+            '#gallery-grid',
+        ].join(','));
+        for (const el of candidates) {
+            if (!el) continue;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none') continue;
+            if (style.visibility === 'hidden') continue;
+            if (parseFloat(style.opacity) === 0) continue;
+            if (el.offsetParent === null && style.position !== 'fixed') continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            result = true;
+            break;
+        }
+    }
+
+    _galleryOpenCache = { value: result, timestamp: now };
+    return result;
 }
 
 // ===== ギャラリー配置・プレビュー制御 =====
@@ -430,16 +450,14 @@ function closePreviewElement(el) {
 /**
  * ギャラリーウィンドウの配置と高さを適用する。
  * - 位置: 画面左端・高さ中央
- * - 高さ: ギャラリーが最初に表示された瞬間の「ST本来の高さ」を1回だけ測り、
+ * - 高さ: 最初に表示された時点の「ST本来の高さ」を1回だけ測り、
  *         それに GALLERY_WINDOW_HEIGHT_DELTA を足した値を保持して適用する。
- *         （ギャラリーを閉じるとキャッシュをクリアし、次回開いた時に再測定）
  */
 function applyGalleryWindowLayout() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
         if (!el) continue;
 
-        // 位置だけ先に確定（高さには触れない）
         el.style.setProperty('position', 'fixed', 'important');
         el.style.setProperty('top', '50%', 'important');
         el.style.setProperty('left', '0', 'important');
@@ -448,7 +466,6 @@ function applyGalleryWindowLayout() {
         el.style.setProperty('transform', 'translateY(-50%)', 'important');
         el.style.setProperty('margin', '0', 'important');
 
-        // ST本来の高さをまだ測っていない場合のみ測定
         if (!galleryBaseHeightCache.has(el)) {
             const h = el.getBoundingClientRect().height;
             if (h > 0) {
@@ -460,7 +477,6 @@ function applyGalleryWindowLayout() {
             }
         }
 
-        // 目標高さを適用
         const base = galleryBaseHeightCache.get(el);
         const targetH = Math.round(base + GALLERY_WINDOW_HEIGHT_DELTA) + 'px';
         el.style.setProperty('height', targetH, 'important');
@@ -469,9 +485,6 @@ function applyGalleryWindowLayout() {
     }
 }
 
-/**
- * ギャラリーが閉じたときに高さキャッシュをクリア。
- */
 function resetGalleryHeightCache() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
@@ -484,36 +497,40 @@ function resetGalleryHeightCache() {
 }
 
 /**
- * ギャラリー下部のページネーションボタンに番号を振る。
- * - 表示されているボタンのみを左から 1, 2, 3, ... と採番
- * - 既存の番号スパンは削除してから再挿入（位置ずれ・重複防止）
+ * ギャラリー下部のページネーションボタンに番号を振る（冪等）。
  */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
 
-    const dots = container.querySelectorAll(
+    const dots = Array.from(container.querySelectorAll(
         '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
-    );
+    ));
 
     let visibleIndex = 0;
     dots.forEach(dot => {
-        // 既存の番号を削除
         const existing = dot.querySelector('.gic-page-number');
-        if (existing) existing.remove();
-
-        // 表示されているか判定
         const cs = getComputedStyle(dot);
-        if (cs.display === 'none') return;
-        if (cs.visibility === 'hidden') return;
-        if (parseFloat(cs.opacity) === 0) return;
+        const visible = cs.display !== 'none' &&
+                        cs.visibility !== 'hidden' &&
+                        parseFloat(cs.opacity) !== 0;
 
-        visibleIndex++;
-
-        const span = document.createElement('span');
-        span.className = 'gic-page-number';
-        span.textContent = String(visibleIndex);
-        dot.appendChild(span);
+        if (visible) {
+            visibleIndex++;
+            const expected = String(visibleIndex);
+            if (existing) {
+                if (existing.textContent !== expected) {
+                    existing.textContent = expected;
+                }
+            } else {
+                const span = document.createElement('span');
+                span.className = 'gic-page-number';
+                span.textContent = expected;
+                dot.appendChild(span);
+            }
+        } else {
+            if (existing) existing.remove();
+        }
     });
 }
 
@@ -602,39 +619,41 @@ function fitPreviewToViewport(panel) {
 }
 
 function applyGalleryLayout() {
-    // ギャラリーウィンドウ（位置・高さ）
-    applyGalleryWindowLayout();
+    if (isApplyingLayout) return;
+    isApplyingLayout = true;
+    try {
+        applyGalleryWindowLayout();
 
-    // ページネーションボタンの縦幅を強制
-    document.querySelectorAll(
-        '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
-    ).forEach(el => {
-        el.style.setProperty('height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
-        el.style.setProperty('min-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
-        el.style.setProperty('max-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
-        el.style.setProperty('position', 'relative', 'important');
-    });
+        document.querySelectorAll(
+            '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
+        ).forEach(el => {
+            el.style.setProperty('height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+            el.style.setProperty('min-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+            el.style.setProperty('max-height', GALLERY_PAGINATION_HEIGHT + 'px', 'important');
+            el.style.setProperty('position', 'relative', 'important');
+        });
 
-    // ★ ページ番号を振る
-    applyPageNumbers();
+        applyPageNumbers();
 
-    // 拡大パネル群
-    const previews = getAllPreviews();
-    if (previews.length === 0) {
-        currentPreviewEl = null;
-        return;
-    }
-
-    const latest = previews[previews.length - 1];
-    if (latest !== currentPreviewEl) {
-        for (const el of previews) {
-            if (el === latest) continue;
-            closePreviewElement(el);
+        const previews = getAllPreviews();
+        if (previews.length === 0) {
+            currentPreviewEl = null;
+            return;
         }
-        currentPreviewEl = latest;
-    }
 
-    fitPreviewToViewport(latest);
+        const latest = previews[previews.length - 1];
+        if (latest !== currentPreviewEl) {
+            for (const el of previews) {
+                if (el === latest) continue;
+                closePreviewElement(el);
+            }
+            currentPreviewEl = latest;
+        }
+
+        fitPreviewToViewport(latest);
+    } finally {
+        setTimeout(() => { isApplyingLayout = false; }, 0);
+    }
 }
 
 let lastGalleryStateForGic = null;
@@ -663,17 +682,10 @@ function syncGalleryButtonVisibility() {
 }
 
 function setupGalleryObserverForGic() {
-    const observer = new MutationObserver(() => {
-        syncGalleryButtonVisibility();
-        applyGalleryLayout();
-    });
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['style', 'class'],
-    });
-
+    // MutationObserver は撤去。
+    // document.body の style/class 監視は自拡張・他拡張の書き込みに反応して
+    // フィードバックループを起こし、メインスレッドを飽和させる。
+    // 300ms ポーリングのみで開閉検知には十分。
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
