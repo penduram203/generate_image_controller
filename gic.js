@@ -32,6 +32,11 @@ const GALLERY_PREVIEW_MARGIN_Y = 0;
 const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 
 /**
+ * プレビューウィンドウの横幅の上限(px)。これ以上は広がらない。
+ */
+const GALLERY_PREVIEW_MAX_WIDTH = 1440;
+
+/**
  * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
  */
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
@@ -115,7 +120,7 @@ function savePersistedState() {
     const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
 
     style.textContent = `
-        /* 画像クリック時の拡大パネル: 画面中央（サイズはJSで動的計算） */
+        /* 画像クリック時の拡大パネル: 位置はJSで動的制御 */
         ${previewSel} {
             position: fixed !important;
             top: 50% !important;
@@ -243,8 +248,6 @@ function syncButtonVisibilityForTextStyling() {
 }
 
 function setupTextStylingObserver() {
-    // body 全体の MutationObserver は style/class の書き込みで
-    // フィードバックループを起こすため、軽量な定期チェックのみで運用する。
     setInterval(syncButtonVisibilityForTextStyling, 300);
     console.log('[GIC] 📝 Text_stylingパネル監視を開始しました（ポーリング方式）');
 }
@@ -391,7 +394,6 @@ function isGalleryOpen() {
 
     let result = false;
 
-    // 最優先: #gallery を直接チェック
     const primary = document.getElementById('gallery');
     if (primary) {
         const style = window.getComputedStyle(primary);
@@ -405,7 +407,6 @@ function isGalleryOpen() {
         }
     }
 
-    // フォールバック（滅多にヒットしない）
     if (!result) {
         const candidates = document.querySelectorAll([
             '#gallery_container',
@@ -455,13 +456,6 @@ function closePreviewElement(el) {
     try { el.remove(); } catch (e) { /* ignore */ }
 }
 
-/**
- * ギャラリーウィンドウの配置と高さを適用する。
- * - 位置: 画面左端・高さ中央
- * - 高さ: 最初に表示された時点の「ST本来の高さ」を1回だけ測り、
- *         それに GALLERY_WINDOW_HEIGHT_DELTA を足した値を希望値とする。
- *         ただしビューポートからはみ出さないようクランプする。
- */
 function applyGalleryWindowLayout() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
@@ -487,7 +481,6 @@ function applyGalleryWindowLayout() {
         const base = galleryBaseHeightCache.get(el);
         const desired = Math.round(base + GALLERY_WINDOW_HEIGHT_DELTA);
 
-        // ★ ビューポートからはみ出さないようクランプ
         const vh = window.innerHeight;
         const maxAllowed = Math.max(100, vh - GALLERY_WINDOW_MAX_VIEWPORT_MARGIN * 2);
         const targetH = Math.min(desired, maxAllowed);
@@ -517,9 +510,6 @@ function resetGalleryHeightCache() {
     }
 }
 
-/**
- * ギャラリー下部のページネーションボタンに番号を振る（冪等）。
- */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
@@ -557,8 +547,9 @@ function applyPageNumbers() {
 
 /**
  * 拡大パネルを transform: scale() で拡大する。
+ * - 横幅の上限 GALLERY_PREVIEW_MAX_WIDTH を超えない
+ * - 右端をギャラリーウィンドウの左端に一致させる
  * - CSS側で visibility: hidden にしてあるため、位置とサイズが整うまで見えない
- * - rAF内で scale を確定させた直後に visible に切り替える
  */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
@@ -578,7 +569,6 @@ function fitPreviewToViewport(panel) {
     panel.style.setProperty('overflow', 'visible', 'important');
     panel.style.setProperty('display', 'flex', 'important');
     panel.style.setProperty('flex-direction', 'column', 'important');
-    panel.style.setProperty('transform-origin', 'center center', 'important');
 
     const closeBtn = panel.querySelector('.dragClose');
     if (closeBtn) {
@@ -616,16 +606,39 @@ function fitPreviewToViewport(panel) {
 
             const vw = window.innerWidth;
             const vh = window.innerHeight;
-            const fitScale = Math.min(vw / pw, vh / ph);
-            const finalScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
 
+            // 横幅の上限: 1440px または viewport 幅の小さい方
+            const maxPreviewWidth = Math.min(GALLERY_PREVIEW_MAX_WIDTH, vw);
+
+            // 縦横それぞれのフィット倍率を計算
+            const fitScale = Math.min(maxPreviewWidth / pw, vh / ph);
+            const scaledScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
+
+            // 乗数適用後も 1440px を超えないよう最終クランプ
+            const maxScaleByWidth = GALLERY_PREVIEW_MAX_WIDTH / pw;
+            const finalScale = Math.min(scaledScale, maxScaleByWidth);
+
+            // ギャラリーウィンドウの左端 X 座標を取得
+            const galleryEl = document.querySelector('#gallery');
+            const galleryLeft = galleryEl
+                ? Math.round(galleryEl.getBoundingClientRect().left)
+                : 0;
+
+            // プレビューの右端をギャラリーの左端に一致させる:
+            //   left をギャラリー左端に設定
+            //   transform-origin: right center で右端を固定点に
+            //   translate(-100%, -50%) で要素の右端をその基準点に置く
+            panel.style.setProperty('left', galleryLeft + 'px', 'important');
+            panel.style.setProperty('top', '50%', 'important');
+            panel.style.setProperty('right', 'auto', 'important');
+            panel.style.setProperty('transform-origin', 'right center', 'important');
             panel.style.setProperty(
                 'transform',
-                `translate(-50%, -50%) scale(${finalScale})`,
+                `translate(-100%, -50%) scale(${finalScale})`,
                 'important'
             );
 
-            // ★ 位置とサイズが整った後に初めて可視化（フラッシュ防止）
+            // 位置とサイズが整った後に初めて可視化（フラッシュ防止）
             panel.style.setProperty('visibility', 'visible', 'important');
         });
     };
@@ -708,8 +721,6 @@ function syncGalleryButtonVisibility() {
 }
 
 function setupGalleryObserverForGic() {
-    // MutationObserver は撤去。
-    // 300ms ポーリングのみで開閉検知には十分。
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
