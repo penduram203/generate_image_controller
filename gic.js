@@ -26,35 +26,25 @@ const GALLERY_PREVIEW_SELECTORS = [
 const GALLERY_PREVIEW_MARGIN_X = 0;
 const GALLERY_PREVIEW_MARGIN_Y = 0;
 
-/**
- * フィット計算の結果に掛ける倍率乗数。1.0 でビューポートにぴったり。
- */
 const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
-
-/**
- * プレビュー画像の横幅上限(px)。これを超えて広がらない。
- */
 const GALLERY_PREVIEW_MAX_WIDTH = 1440;
-
-/**
- * 拡大パネルの閉じるボタン(.dragClose)の拡大倍率
- */
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 
-/**
- * ギャラリーウィンドウの高さを増やす量(px)（希望値）。
- */
 const GALLERY_WINDOW_HEIGHT_DELTA = 600;
-
-/**
- * ギャラリーウィンドウをビューポート内に収めるときの上下余白(px)
- */
 const GALLERY_WINDOW_MAX_VIEWPORT_MARGIN = 20;
+const GALLERY_PAGINATION_HEIGHT = 40;
 
 /**
- * ギャラリー下部ページネーションボタンの縦幅(px)
+ * 起動後、ギャラリーのウォームアップを開始するまでの待機時間(ms)。
+ * ST 本体や他拡張の初期化が終わった頃に実行する。
  */
-const GALLERY_PAGINATION_HEIGHT = 40;
+const GALLERY_WARMUP_DELAY_MS = 8000;
+
+/**
+ * ウォームアップでギャラリーを開いておく時間(ms)。
+ * この間に画像の読み込み・キャッシュが進む。
+ */
+const GALLERY_WARMUP_HOLD_MS = 6000;
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
@@ -67,7 +57,14 @@ let isApplyingLayout = false;
 const galleryBaseHeightCache = new WeakMap();
 
 let _galleryOpenCache = { value: false, timestamp: 0 };
-const GALLERY_OPEN_CACHE_TTL = 100; // ms
+const GALLERY_OPEN_CACHE_TTL = 100;
+
+// ===== ウォームアップ状態管理 =====
+// 'idle'      : 未実行
+// 'running'   : 実行中
+// 'done'      : 完了
+// 'aborted'   : ユーザー操作により中断
+let warmupState = 'idle';
 
 // ===== 永続化ヘルパー =====
 function loadPersistedState() {
@@ -163,6 +160,12 @@ function savePersistedState() {
             line-height: 1 !important;
             user-select: none !important;
             font-family: sans-serif !important;
+        }
+
+        /* ギャラリー上部の"Drag and drop images..."メッセージを非表示 */
+        .nGY2GalleryTop,
+        .nGY2GalleryHeader {
+            display: none !important;
         }
     `;
     document.head.appendChild(style);
@@ -450,10 +453,6 @@ function closePreviewElement(el) {
     try { el.remove(); } catch (e) { /* ignore */ }
 }
 
-/**
- * 表示中のプレビューを全て閉じる。
- * ギャラリーが閉じられた時に呼ばれる。
- */
 function closeAllPreviews() {
     const previews = getAllPreviews();
     if (previews.length === 0) {
@@ -468,8 +467,57 @@ function closeAllPreviews() {
 }
 
 /**
- * ギャラリーウィンドウの配置と高さを適用する。
+ * ギャラリーの上部に表示される"Drag and drop images..."メッセージを非表示にする。
+ * CSSで .nGY2GalleryTop を消しているが、ST のバージョンによっては別要素のため
+ * テキストマッチによるフォールバックも行う。
  */
+function hideGalleryUploadMessage() {
+    const messages = [
+        'Drag and drop images onto the gallery',
+        'Images can also be found in the folder',
+    ];
+
+    // 既知のクラスを最優先で非表示
+    document.querySelectorAll('.nGY2GalleryTop, .nGY2GalleryHeader').forEach(el => {
+        el.style.setProperty('display', 'none', 'important');
+    });
+
+    // テキストマッチによるフォールバック
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        null
+    );
+
+    const toHide = new Set();
+    let node;
+    while ((node = walker.nextNode())) {
+        const t = node.textContent || '';
+        let matched = false;
+        for (const msg of messages) {
+            if (t.includes(msg)) { matched = true; break; }
+        }
+        if (!matched) continue;
+
+        // 最小の祖先で、テキスト長が短いものを選ぶ
+        let el = node.parentElement;
+        let candidate = null;
+        while (el && el !== document.body) {
+            const text = el.textContent || '';
+            if (text.length > 300) break;
+            candidate = el;
+            el = el.parentElement;
+        }
+        if (candidate) toHide.add(candidate);
+    }
+
+    toHide.forEach(el => {
+        if (getComputedStyle(el).display !== 'none') {
+            el.style.setProperty('display', 'none', 'important');
+        }
+    });
+}
+
 function applyGalleryWindowLayout() {
     for (const sel of GALLERY_WINDOW_SELECTORS) {
         const el = document.querySelector(sel);
@@ -524,9 +572,6 @@ function resetGalleryHeightCache() {
     }
 }
 
-/**
- * ギャラリー下部のページネーションボタンに番号を振る（冪等）。
- */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
@@ -562,13 +607,6 @@ function applyPageNumbers() {
     });
 }
 
-/**
- * 拡大パネルを所定の位置・サイズに整える。
- * - 左端: ギャラリーウィンドウの右端
- * - 垂直: 中央
- * - 横幅: 最大 GALLERY_PREVIEW_MAX_WIDTH px
- * - transform: scale は使わず width / height を直接指定
- */
 function fitPreviewToViewport(panel) {
     if (!panel) return;
 
@@ -662,7 +700,6 @@ function applyGalleryLayout() {
     if (isApplyingLayout) return;
     isApplyingLayout = true;
     try {
-        // ★ ギャラリーが閉じている場合はプレビュー・配置調整は不要
         if (!isGalleryOpen()) {
             closeAllPreviews();
             return;
@@ -680,6 +717,9 @@ function applyGalleryLayout() {
         });
 
         applyPageNumbers();
+
+        // アップロードメッセージを非表示
+        hideGalleryUploadMessage();
 
         const previews = getAllPreviews();
         if (previews.length === 0) {
@@ -724,7 +764,7 @@ function syncGalleryButtonVisibility() {
         applyGalleryLayout();
     } else {
         resetGalleryHeightCache();
-        closeAllPreviews();   // ★ ギャラリーが閉じたのでプレビューも閉じる
+        closeAllPreviews();
     }
 }
 
@@ -792,6 +832,115 @@ function openGalleryFromGic() {
 
     console.warn('[GIC] ギャラリーを開くためのボタン/APIが見つかりませんでした');
     return false;
+}
+
+// ===== 公式ギャラリーを閉じる（プログラム的） =====
+
+function closeGalleryProgrammatically() {
+    // 方法1: #gallery 内の閉じるボタン
+    const g = document.getElementById('gallery');
+    if (g) {
+        const closeBtn = g.querySelector(':scope > .dragClose') ||
+                         g.querySelector(':scope > .panelControlBar .dragClose') ||
+                         g.querySelector('.dragClose');
+        if (closeBtn && typeof closeBtn.click === 'function') {
+            try {
+                closeBtn.click();
+                console.log('[GIC] ギャラリーを閉じました (dragClose)');
+                return true;
+            } catch (e) { /* fallthrough */ }
+        }
+    }
+
+    // 方法2: Escape キー
+    try {
+        const esc = new KeyboardEvent('keydown', {
+            key: 'Escape',
+            code: 'Escape',
+            keyCode: 27,
+            which: 27,
+            bubbles: true,
+            cancelable: true,
+        });
+        document.dispatchEvent(esc);
+        console.log('[GIC] ギャラリーを閉じました (Escape)');
+        return true;
+    } catch (e) {
+        console.warn('[GIC] ギャラリーを閉じるのに失敗:', e);
+        return false;
+    }
+}
+
+// ===== ギャラリーのウォームアップ =====
+
+/**
+ * 起動時にギャラリーを1度だけ開いて画像を読み込ませる。
+ * これにより、ユーザーが初めてギャラリーを開く時の遅延を解消する。
+ * ユーザーが先に操作した場合は中断する。
+ */
+async function warmUpGallery() {
+    if (warmupState !== 'idle') return;
+    if (isGalleryOpen()) {
+        // 既に何らかの理由で開いているなら何もしない
+        warmupState = 'done';
+        return;
+    }
+
+    warmupState = 'running';
+    console.log('[GIC] 🔥 ギャラリーのウォームアップを開始します');
+
+    // ウォームアップ中はギャラリーを完全に隠す
+    const hideStyle = document.createElement('style');
+    hideStyle.id = 'gic-gallery-warmup-hide';
+    hideStyle.textContent = `
+        #gallery,
+        .nGY2Gallery,
+        .nGY2GalleryTop,
+        .nGY2GalleryBottom,
+        [forchar="gallery"] {
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+    `;
+    document.head.appendChild(hideStyle);
+
+    const startTime = Date.now();
+
+    try {
+        const opened = openGalleryFromGic();
+        if (!opened) {
+            console.warn('[GIC] 🔥 ウォームアップ: ギャラリーを開けませんでした');
+            warmupState = 'idle';
+            hideStyle.remove();
+            return;
+        }
+
+        // GALLERY_WARMUP_HOLD_MS の間、ギャラリーを開いたままにする
+        await new Promise(r => setTimeout(r, GALLERY_WARMUP_HOLD_MS));
+
+        // ユーザーに中断されていたら何もしない
+        if (warmupState === 'aborted') {
+            console.log('[GIC] 🔥 ウォームアップはユーザー操作により中断されました');
+            hideStyle.remove();
+            return;
+        }
+
+        // ギャラリーを閉じる
+        closeGalleryProgrammatically();
+
+        // 少し待ってから非表示スタイルを解除
+        setTimeout(() => {
+            hideStyle.remove();
+        }, 500);
+
+        warmupState = 'done';
+        console.log(`[GIC] 🔥 ウォームアップ完了 (${Date.now() - startTime}ms)`);
+    } catch (e) {
+        console.warn('[GIC] 🔥 ウォームアップ中にエラー:', e);
+        warmupState = 'idle';
+        try { hideStyle.remove(); } catch (_) {}
+    }
 }
 
 // ===== GICボタン（事前設定 / 背景生成）の生成 =====
@@ -944,6 +1093,15 @@ function createGalleryButton() {
         if (now - lastActionTime < 200) return;
         lastActionTime = now;
         console.log(`[GIC] ギャラリーボタントリガー: ${source}`);
+
+        // ★ ユーザーが操作した → ウォームアップを中断
+        if (warmupState === 'running') {
+            warmupState = 'aborted';
+            const hs = document.getElementById('gic-gallery-warmup-hide');
+            if (hs) hs.remove();
+            console.log('[GIC] 🔥 ユーザー操作によりウォームアップを中断');
+        }
+
         flashBlue();
         openGalleryFromGic();
     };
@@ -1009,6 +1167,13 @@ function initializeGIC() {
     syncButtonVisibilityForTextStyling();
     syncGalleryButtonVisibility();
     applyGalleryLayout();
+
+    // ★ 一定時間後にギャラリーのウォームアップを開始
+    setTimeout(() => {
+        warmUpGallery().catch(e => {
+            console.warn('[GIC] ウォームアップ呼び出しでエラー:', e);
+        });
+    }, GALLERY_WARMUP_DELAY_MS);
 }
 
 if (document.readyState === 'loading') {
