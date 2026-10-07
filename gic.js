@@ -34,31 +34,10 @@ const GALLERY_WINDOW_HEIGHT_DELTA = 600;
 const GALLERY_WINDOW_MAX_VIEWPORT_MARGIN = 20;
 const GALLERY_PAGINATION_HEIGHT = 40;
 
-/**
- * 起動後、ギャラリーのウォームアップを開始するまでの待機時間(ms)。
- */
 const GALLERY_WARMUP_DELAY_MS = 2000;
-
-/**
- * ウォームアップでギャラリーを開いた後、画像リストが描画されるのを待つ時間(ms)。
- */
 const GALLERY_WARMUP_RENDER_WAIT_MS = 1000;
-
-/**
- * 画像プリロードのタイムアウト(ms)。これを超えたら打ち切る。
- */
 const GALLERY_WARMUP_PRELOAD_TIMEOUT_MS = 20000;
-
-/**
- * ウォームアップでギャラリーを開いておく最低時間(ms)。
- * プリロード完了が早くても、この時間は開いたままにしておく。
- */
 const GALLERY_WARMUP_HOLD_MS = 3000;
-
-/**
- * ページネーションのドット数が安定していると判定するまでの時間(ms)。
- * この時間ドット数が変化しなければ「確定」とみなし、番号を表示する。
- */
 const PAGINATION_STABLE_DELAY_MS = 600;
 
 // ===== 状態 =====
@@ -74,14 +53,8 @@ const galleryBaseHeightCache = new WeakMap();
 let _galleryOpenCache = { value: false, timestamp: 0 };
 const GALLERY_OPEN_CACHE_TTL = 100;
 
-// ページネーション安定性検出
 let _paginationSnapshot = { count: -1, since: 0, stable: false };
 
-// ===== ウォームアップ状態管理 =====
-// 'idle'      : 未実行
-// 'running'   : 実行中
-// 'done'      : 完了
-// 'aborted'   : ユーザー操作により中断
 let warmupState = 'idle';
 
 // ===== 永続化ヘルパー =====
@@ -180,7 +153,6 @@ function savePersistedState() {
             font-family: sans-serif !important;
         }
 
-        /* ギャラリー上部の"Drag and drop images..."メッセージを非表示 */
         .nGY2GalleryTop,
         .nGY2GalleryHeader {
             display: none !important;
@@ -361,10 +333,11 @@ function handleButtonAction() {
     console.log(`[GIC] ボタンアクション: 現在=${isOverrideLocal ? '背景生成' : '事前設定'}, lastUrl=${lastGeneratedImageUrl}`);
 
     if (isOverrideLocal) {
+        // 背景生成 → 事前設定 への切替
         if (window.ImageDisplayExtension?.clearOverrideImage) {
             try {
                 window.ImageDisplayExtension.clearOverrideImage();
-                console.log('[GIC] clearOverrideImage() 成功');
+                console.log('[GIC] clearOverrideImage() 成功（事前設定モードへ切替）');
             } catch (err) {
                 console.error('[GIC] clearOverrideImage エラー:', err);
             }
@@ -372,15 +345,20 @@ function handleButtonAction() {
         isOverrideLocal = false;
         setButtonLabel(LABEL_NORMAL);
     } else {
-        if (lastGeneratedImageUrl && window.ImageDisplayExtension?.setOverrideImage) {
+        // 事前設定 → 背景生成 への切替
+        // ★ 生成画像が無くても setOverrideImage を呼ぶ（空URL=デフォルト画像で override）
+        if (window.ImageDisplayExtension?.setOverrideImage) {
+            const urlToUse = lastGeneratedImageUrl || '';
             try {
-                window.ImageDisplayExtension.setOverrideImage(lastGeneratedImageUrl);
-                console.log(`[GIC] setOverrideImage() 成功: ${lastGeneratedImageUrl}`);
+                window.ImageDisplayExtension.setOverrideImage(urlToUse);
+                if (urlToUse) {
+                    console.log(`[GIC] setOverrideImage() 成功（背景生成モード）: ${urlToUse}`);
+                } else {
+                    console.log('[GIC] setOverrideImage() 成功（背景生成モード・デフォルト画像）');
+                }
             } catch (err) {
                 console.error('[GIC] setOverrideImage エラー:', err);
             }
-        } else if (!lastGeneratedImageUrl) {
-            console.warn('[GIC] 生成画像がまだありません（ラベルのみ切り替えます）');
         }
         isOverrideLocal = true;
         setButtonLabel(LABEL_OVERRIDE);
@@ -484,22 +462,16 @@ function closeAllPreviews() {
     console.log(`[GIC] ギャラリーが閉じたため ${previews.length} 個のプレビューを閉じました`);
 }
 
-/**
- * ギャラリー上部の"Drag and drop..."メッセージを非表示にする。
- * 探索範囲を #toast-container と #gallery に限定して効率化。
- */
 function hideGalleryUploadMessage() {
     const messages = [
         'Drag and drop images onto the gallery',
         'Images can also be found in the folder',
     ];
 
-    // 既知のクラスを最優先で非表示
     document.querySelectorAll('.nGY2GalleryTop, .nGY2GalleryHeader').forEach(el => {
         el.style.setProperty('display', 'none', 'important');
     });
 
-    // 探索範囲を限定：toast-container と gallery の中だけ見れば十分
     const roots = [];
     const toastContainer = document.getElementById('toast-container');
     if (toastContainer) roots.push(toastContainer);
@@ -589,15 +561,9 @@ function resetGalleryHeightCache() {
             delete el.dataset.gicHeightLogged;
         }
     }
-    // ページネーション安定性スナップショットもリセット
     _paginationSnapshot = { count: -1, since: 0, stable: false };
 }
 
-/**
- * ギャラリー下部のページネーションボタンに番号を振る。
- * - ドット数が PAGINATION_STABLE_DELAY_MS の間変化しなければ「確定」とみなす
- * - 確定するまで番号は表示しない（一時的な過剰表示を防ぐ）
- */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
@@ -606,7 +572,6 @@ function applyPageNumbers() {
         '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
     ));
 
-    // 可視ドット数と位置を収集
     const visibleDots = [];
     dots.forEach(dot => {
         const cs = getComputedStyle(dot);
@@ -618,14 +583,12 @@ function applyPageNumbers() {
 
     const now = performance.now();
 
-    // ドット数の安定性検出
     if (visibleDots.length !== _paginationSnapshot.count) {
         _paginationSnapshot = { count: visibleDots.length, since: now, stable: false };
     } else if (!_paginationSnapshot.stable && now - _paginationSnapshot.since >= PAGINATION_STABLE_DELAY_MS) {
         _paginationSnapshot.stable = true;
     }
 
-    // 不安定な間は番号を撤去
     if (!_paginationSnapshot.stable) {
         dots.forEach(dot => {
             const existing = dot.querySelector('.gic-page-number');
@@ -634,7 +597,6 @@ function applyPageNumbers() {
         return;
     }
 
-    // 安定 → 番号を適用（冪等）
     visibleDots.forEach((dot, index) => {
         const expected = String(index + 1);
         const existing = dot.querySelector('.gic-page-number');
@@ -648,7 +610,6 @@ function applyPageNumbers() {
         }
     });
 
-    // 非可視ドットに残った番号は撤去
     dots.forEach(dot => {
         if (visibleDots.includes(dot)) return;
         const existing = dot.querySelector('.gic-page-number');
@@ -766,7 +727,6 @@ function applyGalleryLayout() {
         });
 
         applyPageNumbers();
-
         hideGalleryUploadMessage();
 
         const previews = getAllPreviews();
@@ -921,11 +881,6 @@ function closeGalleryProgrammatically() {
 
 // ===== ギャラリー画像のプリロード =====
 
-/**
- * ギャラリー内の全画像をブラウザキャッシュにロードする。
- * ギャラリーを開いた状態で呼び出す前提。
- * 画像URLはDOM (img要素) や data-src から収集する。
- */
 async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_MS) {
     const galleryEl = document.getElementById('gallery');
     if (!galleryEl) {
@@ -941,10 +896,8 @@ async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_M
         });
     };
 
-    // 初回収集
     collectUrls();
 
-    // 画像がまだ無ければ、DOM が描画されるのを少し待つ
     if (urls.size === 0) {
         for (let i = 0; i < 5 && urls.size === 0; i++) {
             await new Promise(r => setTimeout(r, 300));
@@ -959,8 +912,6 @@ async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_M
 
     console.log(`[GIC] 🔥 プリロード開始: ${urls.size} 件`);
 
-    // 既にブラウザキャッシュにあるかどうかを問わず、Image()で読み込みを促す
-    // （未キャッシュならネットワーク取得、キャッシュ済みなら即完了）
     let loaded = 0;
     const startTime = performance.now();
 
@@ -982,7 +933,6 @@ async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_M
         img.src = url;
     }));
 
-    // 全体タイムアウト
     await Promise.race([
         Promise.all(promises),
         new Promise(r => setTimeout(r, timeoutMs)),
@@ -996,11 +946,6 @@ async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_M
 
 // ===== ギャラリーのウォームアップ =====
 
-/**
- * 起動時にギャラリーを1度だけ開き、全画像をブラウザキャッシュに載せる。
- * これにより、ユーザーが初めてギャラリーを開く時の遅延を解消する。
- * ユーザーが先に操作した場合は中断する。
- */
 async function warmUpGallery() {
     if (warmupState !== 'idle') return;
     if (isGalleryOpen()) {
@@ -1037,7 +982,6 @@ async function warmUpGallery() {
             return;
         }
 
-        // ギャラリーDOMが描画されるのを待つ
         await new Promise(r => setTimeout(r, GALLERY_WARMUP_RENDER_WAIT_MS));
 
         if (warmupState === 'aborted') {
@@ -1046,7 +990,6 @@ async function warmUpGallery() {
             return;
         }
 
-        // ★ 画像を明示的にプリロード（ブラウザキャッシュに載せる）
         await preloadGalleryImages();
 
         if (warmupState === 'aborted') {
@@ -1055,7 +998,6 @@ async function warmUpGallery() {
             return;
         }
 
-        // 最低保持時間まで待つ
         const elapsed = performance.now() - startTime;
         const remaining = GALLERY_WARMUP_HOLD_MS - elapsed;
         if (remaining > 0) {
@@ -1092,7 +1034,7 @@ function createReleaseButton() {
     const btn = document.createElement('button');
     btn.id = BUTTON_ID;
     btn.type = 'button';
-    btn.title = '強制表示モード（背景生成）と通常モード（事前設定）を切り替える';
+    btn.title = '事前設定モード（キーワードマッチ）と背景生成モード（生成画像）を切り替える';
     btn.textContent = isOverrideLocal ? LABEL_OVERRIDE : LABEL_NORMAL;
 
     Object.assign(btn.style, {
