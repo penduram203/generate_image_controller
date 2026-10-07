@@ -36,13 +36,11 @@ const GALLERY_PAGINATION_HEIGHT = 40;
 
 /**
  * 起動後、ギャラリーのウォームアップを開始するまでの待機時間(ms)。
- * ST 本体や他拡張の初期化が終わった頃に実行する。
  */
 const GALLERY_WARMUP_DELAY_MS = 2000;
 
 /**
  * ウォームアップでギャラリーを開いておく時間(ms)。
- * この間に画像の読み込み・キャッシュが進む。
  */
 const GALLERY_WARMUP_HOLD_MS = 6000;
 
@@ -468,8 +466,9 @@ function closeAllPreviews() {
 
 /**
  * ギャラリーの上部に表示される"Drag and drop images..."メッセージを非表示にする。
- * CSSで .nGY2GalleryTop を消しているが、ST のバージョンによっては別要素のため
- * テキストマッチによるフォールバックも行う。
+ * - CSSで .nGY2GalleryTop を消しているが、ST のバージョンによっては別要素
+ * - さらに toastr 通知として表示されるケースにも対応
+ * - テキストマッチによるフォールバックも行う
  */
 function hideGalleryUploadMessage() {
     const messages = [
@@ -477,12 +476,27 @@ function hideGalleryUploadMessage() {
         'Images can also be found in the folder',
     ];
 
-    // 既知のクラスを最優先で非表示
+    // 1. 既知のクラスを最優先で非表示
     document.querySelectorAll('.nGY2GalleryTop, .nGY2GalleryHeader').forEach(el => {
         el.style.setProperty('display', 'none', 'important');
     });
 
-    // テキストマッチによるフォールバック
+    // 2. ★ toastr 通知を非表示（ウォームアップ時の通知対策）
+    const toastContainer = document.getElementById('toast-container');
+    if (toastContainer) {
+        toastContainer.querySelectorAll('.toast, .toast-message, [role="alert"]').forEach(el => {
+            const text = el.textContent || '';
+            for (const msg of messages) {
+                if (text.includes(msg)) {
+                    const toast = el.closest('.toast') || el;
+                    toast.style.setProperty('display', 'none', 'important');
+                    break;
+                }
+            }
+        });
+    }
+
+    // 3. テキストマッチによるフォールバック（ギャラリー内部など）
     const walker = document.createTreeWalker(
         document.body,
         NodeFilter.SHOW_TEXT,
@@ -499,7 +513,6 @@ function hideGalleryUploadMessage() {
         }
         if (!matched) continue;
 
-        // 最小の祖先で、テキスト長が短いものを選ぶ
         let el = node.parentElement;
         let candidate = null;
         while (el && el !== document.body) {
@@ -772,10 +785,13 @@ function setupGalleryObserverForGic() {
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
+        // ★ ギャラリーが閉じていても、toastrなどページ最上位のメッセージは消す
+        hideGalleryUploadMessage();
     }, 300);
 
     syncGalleryButtonVisibility();
     applyGalleryLayout();
+    hideGalleryUploadMessage();
 }
 
 // ===== 公式ギャラリーを開く =====
@@ -837,7 +853,6 @@ function openGalleryFromGic() {
 // ===== 公式ギャラリーを閉じる（プログラム的） =====
 
 function closeGalleryProgrammatically() {
-    // 方法1: #gallery 内の閉じるボタン
     const g = document.getElementById('gallery');
     if (g) {
         const closeBtn = g.querySelector(':scope > .dragClose') ||
@@ -852,7 +867,6 @@ function closeGalleryProgrammatically() {
         }
     }
 
-    // 方法2: Escape キー
     try {
         const esc = new KeyboardEvent('keydown', {
             key: 'Escape',
@@ -881,7 +895,6 @@ function closeGalleryProgrammatically() {
 async function warmUpGallery() {
     if (warmupState !== 'idle') return;
     if (isGalleryOpen()) {
-        // 既に何らかの理由で開いているなら何もしない
         warmupState = 'done';
         return;
     }
@@ -889,7 +902,6 @@ async function warmUpGallery() {
     warmupState = 'running';
     console.log('[GIC] 🔥 ギャラリーのウォームアップを開始します');
 
-    // ウォームアップ中はギャラリーを完全に隠す
     const hideStyle = document.createElement('style');
     hideStyle.id = 'gic-gallery-warmup-hide';
     hideStyle.textContent = `
@@ -916,22 +928,20 @@ async function warmUpGallery() {
             return;
         }
 
-        // GALLERY_WARMUP_HOLD_MS の間、ギャラリーを開いたままにする
         await new Promise(r => setTimeout(r, GALLERY_WARMUP_HOLD_MS));
 
-        // ユーザーに中断されていたら何もしない
         if (warmupState === 'aborted') {
             console.log('[GIC] 🔥 ウォームアップはユーザー操作により中断されました');
             hideStyle.remove();
             return;
         }
 
-        // ギャラリーを閉じる
         closeGalleryProgrammatically();
 
-        // 少し待ってから非表示スタイルを解除
         setTimeout(() => {
             hideStyle.remove();
+            // ウォームアップ中に出た toastr メッセージをここで再度消す
+            hideGalleryUploadMessage();
         }, 500);
 
         warmupState = 'done';
@@ -1161,6 +1171,7 @@ function initializeGIC() {
         markGeneratedMessagesInDom();
         positionGalleryButton();
         applyGalleryLayout();
+        hideGalleryUploadMessage();   // ★ 追加
     }, 1500);
 
     scanForGeneratedImages();
@@ -1168,7 +1179,6 @@ function initializeGIC() {
     syncGalleryButtonVisibility();
     applyGalleryLayout();
 
-    // ★ 一定時間後にギャラリーのウォームアップを開始
     setTimeout(() => {
         warmUpGallery().catch(e => {
             console.warn('[GIC] ウォームアップ呼び出しでエラー:', e);
