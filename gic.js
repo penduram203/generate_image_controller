@@ -43,7 +43,6 @@ const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 
 /**
  * ギャラリーウィンドウの高さを増やす量(px)（希望値）。
- * 実際の適用値はビューポートに合わせてクランプされる。
  */
 const GALLERY_WINDOW_HEIGHT_DELTA = 600;
 
@@ -65,10 +64,8 @@ const processedMessageKeys = new Set();
 let currentPreviewEl = null;
 let isApplyingLayout = false;
 
-// ギャラリー要素ごとの「ST本来の高さ」を記録（ギャラリーを閉じたらクリア）
 const galleryBaseHeightCache = new WeakMap();
 
-// ギャラリー開閉判定のキャッシュ（重いDOM読みを毎回呼ばない）
 let _galleryOpenCache = { value: false, timestamp: 0 };
 const GALLERY_OPEN_CACHE_TTL = 100; // ms
 
@@ -120,11 +117,6 @@ function savePersistedState() {
     const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
 
     style.textContent = `
-        /* 画像クリック時の拡大パネル:
-         * - 左端をギャラリー右端に合わせる（left はJSで設定）
-         * - 垂直方向は中央（translateY(-50%)）
-         * - scale は使わず width/height を直接指定
-         * - レイアウト確定までは visibility: hidden でフラッシュ防止 */
         ${previewSel} {
             position: fixed !important;
             top: 50% !important;
@@ -156,7 +148,6 @@ function savePersistedState() {
             position: relative !important;
         }
 
-        /* ページ番号: 太字 + 黒文字 + 白い縁取り */
         .gic-page-number {
             position: absolute !important;
             top: 50% !important;
@@ -251,8 +242,6 @@ function syncButtonVisibilityForTextStyling() {
 }
 
 function setupTextStylingObserver() {
-    // body 全体の MutationObserver は style/class の書き込みで
-    // フィードバックループを起こすため、軽量な定期チェックのみで運用する。
     setInterval(syncButtonVisibilityForTextStyling, 300);
     console.log('[GIC] 📝 Text_stylingパネル監視を開始しました（ポーリング方式）');
 }
@@ -399,7 +388,6 @@ function isGalleryOpen() {
 
     let result = false;
 
-    // 最優先: #gallery を直接チェック
     const primary = document.getElementById('gallery');
     if (primary) {
         const style = window.getComputedStyle(primary);
@@ -413,7 +401,6 @@ function isGalleryOpen() {
         }
     }
 
-    // フォールバック（滅多にヒットしない）
     if (!result) {
         const candidates = document.querySelectorAll([
             '#gallery_container',
@@ -464,6 +451,23 @@ function closePreviewElement(el) {
 }
 
 /**
+ * 表示中のプレビューを全て閉じる。
+ * ギャラリーが閉じられた時に呼ばれる。
+ */
+function closeAllPreviews() {
+    const previews = getAllPreviews();
+    if (previews.length === 0) {
+        currentPreviewEl = null;
+        return;
+    }
+    for (const el of previews) {
+        closePreviewElement(el);
+    }
+    currentPreviewEl = null;
+    console.log(`[GIC] ギャラリーが閉じたため ${previews.length} 個のプレビューを閉じました`);
+}
+
+/**
  * ギャラリーウィンドウの配置と高さを適用する。
  */
 function applyGalleryWindowLayout() {
@@ -491,7 +495,6 @@ function applyGalleryWindowLayout() {
         const base = galleryBaseHeightCache.get(el);
         const desired = Math.round(base + GALLERY_WINDOW_HEIGHT_DELTA);
 
-        // ビューポートからはみ出さないようクランプ
         const vh = window.innerHeight;
         const maxAllowed = Math.max(100, vh - GALLERY_WINDOW_MAX_VIEWPORT_MARGIN * 2);
         const targetH = Math.min(desired, maxAllowed);
@@ -564,7 +567,6 @@ function applyPageNumbers() {
  * - 左端: ギャラリーウィンドウの右端
  * - 垂直: 中央
  * - 横幅: 最大 GALLERY_PREVIEW_MAX_WIDTH px
- * - 高さ: ビューポート内に収まる範囲
  * - transform: scale は使わず width / height を直接指定
  */
 function fitPreviewToViewport(panel) {
@@ -574,7 +576,6 @@ function fitPreviewToViewport(panel) {
     const header = panel.querySelector('.panelControlBar');
     if (!img) return;
 
-    // 閉じるボタンの拡大をJS側でも強制
     const closeBtn = panel.querySelector('.dragClose');
     if (closeBtn) {
         closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
@@ -582,7 +583,6 @@ function fitPreviewToViewport(panel) {
         closeBtn.style.setProperty('display', 'inline-block', 'important');
     }
 
-    // ヘッダが潰れないように
     if (header) {
         header.style.setProperty('flex', '0 0 auto', 'important');
     }
@@ -592,7 +592,6 @@ function fitPreviewToViewport(panel) {
         const nh = img.naturalHeight || 0;
         if (!nw || !nh) return;
 
-        // ギャラリーウィンドウの右端を取得
         const galleryEl = document.getElementById('gallery');
         let galleryRight = 0;
         if (galleryEl) {
@@ -603,15 +602,12 @@ function fitPreviewToViewport(panel) {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
 
-        // ギャラリー右端からビューポート右端までの使える幅
         const availableW = Math.max(100, vw - galleryRight - GALLERY_PREVIEW_MARGIN_X);
         const availableH = Math.max(100, vh - GALLERY_PREVIEW_MARGIN_Y * 2);
 
-        // 画面内に収める基本倍率
         const fitScale = Math.min(availableW / nw, availableH / nh);
         const desiredScale = fitScale * GALLERY_PREVIEW_SCALE_MULTIPLIER;
 
-        // 横幅上限 GALLERY_PREVIEW_MAX_WIDTH による倍率の制約
         const maxScaleByWidth = GALLERY_PREVIEW_MAX_WIDTH / nw;
 
         const finalScale = Math.min(desiredScale, maxScaleByWidth);
@@ -619,7 +615,6 @@ function fitPreviewToViewport(panel) {
         const finalW = Math.max(1, Math.floor(nw * finalScale));
         const finalH = Math.max(1, Math.floor(nh * finalScale));
 
-        // --- パネル位置・サイズ（scaleは使わない） ---
         panel.style.setProperty('position', 'fixed', 'important');
         panel.style.setProperty('left', galleryRight + 'px', 'important');
         panel.style.setProperty('top', '50%', 'important');
@@ -638,7 +633,6 @@ function fitPreviewToViewport(panel) {
         panel.style.setProperty('max-width', 'none', 'important');
         panel.style.setProperty('max-height', 'none', 'important');
 
-        // --- 画像サイズ ---
         img.style.setProperty('width', finalW + 'px', 'important');
         img.style.setProperty('height', finalH + 'px', 'important');
         img.style.setProperty('max-width', 'none', 'important');
@@ -647,7 +641,6 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // --- 可視化（位置・サイズ確定後） ---
         panel.style.setProperty('visibility', 'visible', 'important');
     };
 
@@ -669,6 +662,12 @@ function applyGalleryLayout() {
     if (isApplyingLayout) return;
     isApplyingLayout = true;
     try {
+        // ★ ギャラリーが閉じている場合はプレビュー・配置調整は不要
+        if (!isGalleryOpen()) {
+            closeAllPreviews();
+            return;
+        }
+
         applyGalleryWindowLayout();
 
         document.querySelectorAll(
@@ -725,11 +724,11 @@ function syncGalleryButtonVisibility() {
         applyGalleryLayout();
     } else {
         resetGalleryHeightCache();
+        closeAllPreviews();   // ★ ギャラリーが閉じたのでプレビューも閉じる
     }
 }
 
 function setupGalleryObserverForGic() {
-    // MutationObserver は撤去。300ms ポーリングのみで開閉検知には十分。
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
