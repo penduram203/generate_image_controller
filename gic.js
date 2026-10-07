@@ -117,10 +117,25 @@ function savePersistedState() {
             visibility: hidden !important;
         }
 
+        /* 閉じるボタン:
+         * - パネルの左端・高さ中央に配置
+         * - 通常は非表示（opacity: 0 / pointer-events: none）
+         * - パネルにマウスが重なった時のみ表示 */
         ${previewSel} .dragClose {
-            transform: scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
-            transform-origin: top right !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 50% !important;
+            transform: translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
+            transform-origin: left center !important;
             display: inline-block !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            transition: opacity 0.15s ease !important;
+            z-index: 100 !important;
+        }
+        ${previewSel}:hover .dragClose {
+            opacity: 1 !important;
+            pointer-events: auto !important;
         }
 
         .nGY2GalleryBottom {
@@ -333,7 +348,6 @@ function handleButtonAction() {
     console.log(`[GIC] ボタンアクション: 現在=${isOverrideLocal ? '背景生成' : '事前設定'}, lastUrl=${lastGeneratedImageUrl}`);
 
     if (isOverrideLocal) {
-        // 背景生成 → 事前設定 への切替
         if (window.ImageDisplayExtension?.clearOverrideImage) {
             try {
                 window.ImageDisplayExtension.clearOverrideImage();
@@ -345,8 +359,6 @@ function handleButtonAction() {
         isOverrideLocal = false;
         setButtonLabel(LABEL_NORMAL);
     } else {
-        // 事前設定 → 背景生成 への切替
-        // ★ 生成画像が無くても setOverrideImage を呼ぶ（空URL=デフォルト画像で override）
         if (window.ImageDisplayExtension?.setOverrideImage) {
             const urlToUse = lastGeneratedImageUrl || '';
             try {
@@ -624,13 +636,7 @@ function fitPreviewToViewport(panel) {
     const header = panel.querySelector('.panelControlBar');
     if (!img) return;
 
-    const closeBtn = panel.querySelector('.dragClose');
-    if (closeBtn) {
-        closeBtn.style.setProperty('transform', `scale(${GALLERY_PREVIEW_CLOSE_SCALE})`, 'important');
-        closeBtn.style.setProperty('transform-origin', 'top right', 'important');
-        closeBtn.style.setProperty('display', 'inline-block', 'important');
-    }
-
+    // ★ 閉じるボタンの位置・表示制御は CSS 側で完結させる（JS では触らない）
     if (header) {
         header.style.setProperty('flex', '0 0 auto', 'important');
     }
