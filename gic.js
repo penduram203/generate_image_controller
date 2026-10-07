@@ -102,10 +102,14 @@ function savePersistedState() {
     const style = document.createElement('style');
     style.id = 'gic-gallery-layout-style';
 
-    const previewSel = GALLERY_PREVIEW_SELECTORS.join(', ');
+    // ★ セレクタを個別に展開（カンマ結合による意図しないマッチを防ぐ）
+    const panelSel      = GALLERY_PREVIEW_SELECTORS.join(', ');
+    const closeSel      = GALLERY_PREVIEW_SELECTORS.map(s => `${s} .dragClose`).join(', ');
+    const closeHoverSel = GALLERY_PREVIEW_SELECTORS.map(s => `${s}:hover .dragClose`).join(', ');
 
     style.textContent = `
-        ${previewSel} {
+        /* プレビューパネル */
+        ${panelSel} {
             position: fixed !important;
             top: 50% !important;
             left: 0 !important;
@@ -117,23 +121,23 @@ function savePersistedState() {
             visibility: hidden !important;
         }
 
-        /* 閉じるボタン:
-         * - パネルの左端・高さ中央に配置
-         * - 通常は非表示（opacity: 0 / pointer-events: none）
-         * - パネルにマウスが重なった時のみ表示 */
-        ${previewSel} .dragClose {
-            position: absolute !important;
-            left: 0 !important;
-            top: 50% !important;
+        /* 閉じるボタン: 通常は非表示
+         * - position: fixed（left/top は JS で設定）
+         * - transform-origin: left center で左基点に拡大 */
+        ${closeSel} {
+            position: fixed !important;
             transform: translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE}) !important;
             transform-origin: left center !important;
             display: inline-block !important;
             opacity: 0 !important;
             pointer-events: none !important;
             transition: opacity 0.15s ease !important;
-            z-index: 100 !important;
+            z-index: 10000 !important;
+            margin: 0 !important;
         }
-        ${previewSel}:hover .dragClose {
+
+        /* パネルにホバーで表示（:hover は DOM 子孫に対しても発火する） */
+        ${closeHoverSel} {
             opacity: 1 !important;
             pointer-events: auto !important;
         }
@@ -634,9 +638,9 @@ function fitPreviewToViewport(panel) {
 
     const img = panel.querySelector('img');
     const header = panel.querySelector('.panelControlBar');
+    const closeBtn = panel.querySelector('.dragClose');
     if (!img) return;
 
-    // ★ 閉じるボタンの位置・表示制御は CSS 側で完結させる（JS では触らない）
     if (header) {
         header.style.setProperty('flex', '0 0 auto', 'important');
     }
@@ -686,6 +690,7 @@ function fitPreviewToViewport(panel) {
         panel.style.setProperty('height', 'auto', 'important');
         panel.style.setProperty('max-width', 'none', 'important');
         panel.style.setProperty('max-height', 'none', 'important');
+        panel.style.setProperty('visibility', 'visible', 'important');
 
         img.style.setProperty('width', finalW + 'px', 'important');
         img.style.setProperty('height', finalH + 'px', 'important');
@@ -695,7 +700,23 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        panel.style.setProperty('visibility', 'visible', 'important');
+        // ★ 閉じるボタンをパネルの左端・高さ中央に固定配置
+        if (closeBtn) {
+            requestAnimationFrame(() => {
+                const pr = panel.getBoundingClientRect();
+                if (pr.width > 0 && pr.height > 0) {
+                    closeBtn.style.setProperty('position', 'fixed', 'important');
+                    closeBtn.style.setProperty('left', Math.round(pr.left) + 'px', 'important');
+                    closeBtn.style.setProperty('top', Math.round(pr.top + pr.height / 2) + 'px', 'important');
+                    closeBtn.style.setProperty(
+                        'transform',
+                        `translateY(-50%) scale(${GALLERY_PREVIEW_CLOSE_SCALE})`,
+                        'important'
+                    );
+                    closeBtn.style.setProperty('transform-origin', 'left center', 'important');
+                }
+            });
+        }
     };
 
     if (img.complete && img.naturalWidth) {
