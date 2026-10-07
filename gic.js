@@ -40,9 +40,26 @@ const GALLERY_PAGINATION_HEIGHT = 40;
 const GALLERY_WARMUP_DELAY_MS = 2000;
 
 /**
- * ウォームアップでギャラリーを開いておく時間(ms)。
+ * ウォームアップでギャラリーを開いた後、画像リストが描画されるのを待つ時間(ms)。
  */
-const GALLERY_WARMUP_HOLD_MS = 6000;
+const GALLERY_WARMUP_RENDER_WAIT_MS = 1000;
+
+/**
+ * 画像プリロードのタイムアウト(ms)。これを超えたら打ち切る。
+ */
+const GALLERY_WARMUP_PRELOAD_TIMEOUT_MS = 20000;
+
+/**
+ * ウォームアップでギャラリーを開いておく最低時間(ms)。
+ * プリロード完了が早くても、この時間は開いたままにしておく。
+ */
+const GALLERY_WARMUP_HOLD_MS = 3000;
+
+/**
+ * ページネーションのドット数が安定していると判定するまでの時間(ms)。
+ * この時間ドット数が変化しなければ「確定」とみなし、番号を表示する。
+ */
+const PAGINATION_STABLE_DELAY_MS = 600;
 
 // ===== 状態 =====
 let lastGeneratedImageUrl = null;
@@ -56,6 +73,9 @@ const galleryBaseHeightCache = new WeakMap();
 
 let _galleryOpenCache = { value: false, timestamp: 0 };
 const GALLERY_OPEN_CACHE_TTL = 100;
+
+// ページネーション安定性検出
+let _paginationSnapshot = { count: -1, since: 0, stable: false };
 
 // ===== ウォームアップ状態管理 =====
 // 'idle'      : 未実行
@@ -465,10 +485,8 @@ function closeAllPreviews() {
 }
 
 /**
- * ギャラリーの上部に表示される"Drag and drop images..."メッセージを非表示にする。
- * - CSSで .nGY2GalleryTop を消しているが、ST のバージョンによっては別要素
- * - さらに toastr 通知として表示されるケースにも対応
- * - テキストマッチによるフォールバックも行う
+ * ギャラリー上部の"Drag and drop..."メッセージを非表示にする。
+ * 探索範囲を #toast-container と #gallery に限定して効率化。
  */
 function hideGalleryUploadMessage() {
     const messages = [
@@ -476,59 +494,47 @@ function hideGalleryUploadMessage() {
         'Images can also be found in the folder',
     ];
 
-    // 1. 既知のクラスを最優先で非表示
+    // 既知のクラスを最優先で非表示
     document.querySelectorAll('.nGY2GalleryTop, .nGY2GalleryHeader').forEach(el => {
         el.style.setProperty('display', 'none', 'important');
     });
 
-    // 2. ★ toastr 通知を非表示（ウォームアップ時の通知対策）
+    // 探索範囲を限定：toast-container と gallery の中だけ見れば十分
+    const roots = [];
     const toastContainer = document.getElementById('toast-container');
-    if (toastContainer) {
-        toastContainer.querySelectorAll('.toast, .toast-message, [role="alert"]').forEach(el => {
-            const text = el.textContent || '';
+    if (toastContainer) roots.push(toastContainer);
+    const galleryEl = document.getElementById('gallery');
+    if (galleryEl) roots.push(galleryEl);
+
+    for (const root of roots) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        const toHide = new Set();
+        let node;
+        while ((node = walker.nextNode())) {
+            const t = node.textContent || '';
+            let matched = false;
             for (const msg of messages) {
-                if (text.includes(msg)) {
-                    const toast = el.closest('.toast') || el;
-                    toast.style.setProperty('display', 'none', 'important');
-                    break;
-                }
+                if (t.includes(msg)) { matched = true; break; }
+            }
+            if (!matched) continue;
+
+            let el = node.parentElement;
+            let candidate = null;
+            while (el && el !== document.body) {
+                const text = el.textContent || '';
+                if (text.length > 300) break;
+                candidate = el;
+                el = el.parentElement;
+            }
+            if (candidate) toHide.add(candidate);
+        }
+
+        toHide.forEach(el => {
+            if (getComputedStyle(el).display !== 'none') {
+                el.style.setProperty('display', 'none', 'important');
             }
         });
     }
-
-    // 3. テキストマッチによるフォールバック（ギャラリー内部など）
-    const walker = document.createTreeWalker(
-        document.body,
-        NodeFilter.SHOW_TEXT,
-        null
-    );
-
-    const toHide = new Set();
-    let node;
-    while ((node = walker.nextNode())) {
-        const t = node.textContent || '';
-        let matched = false;
-        for (const msg of messages) {
-            if (t.includes(msg)) { matched = true; break; }
-        }
-        if (!matched) continue;
-
-        let el = node.parentElement;
-        let candidate = null;
-        while (el && el !== document.body) {
-            const text = el.textContent || '';
-            if (text.length > 300) break;
-            candidate = el;
-            el = el.parentElement;
-        }
-        if (candidate) toHide.add(candidate);
-    }
-
-    toHide.forEach(el => {
-        if (getComputedStyle(el).display !== 'none') {
-            el.style.setProperty('display', 'none', 'important');
-        }
-    });
 }
 
 function applyGalleryWindowLayout() {
@@ -583,8 +589,15 @@ function resetGalleryHeightCache() {
             delete el.dataset.gicHeightLogged;
         }
     }
+    // ページネーション安定性スナップショットもリセット
+    _paginationSnapshot = { count: -1, since: 0, stable: false };
 }
 
+/**
+ * ギャラリー下部のページネーションボタンに番号を振る。
+ * - ドット数が PAGINATION_STABLE_DELAY_MS の間変化しなければ「確定」とみなす
+ * - 確定するまで番号は表示しない（一時的な過剰表示を防ぐ）
+ */
 function applyPageNumbers() {
     const container = document.querySelector('.nGY2GalleryBottom');
     if (!container) return;
@@ -593,30 +606,53 @@ function applyPageNumbers() {
         '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
     ));
 
-    let visibleIndex = 0;
+    // 可視ドット数と位置を収集
+    const visibleDots = [];
     dots.forEach(dot => {
-        const existing = dot.querySelector('.gic-page-number');
         const cs = getComputedStyle(dot);
         const visible = cs.display !== 'none' &&
                         cs.visibility !== 'hidden' &&
                         parseFloat(cs.opacity) !== 0;
+        if (visible) visibleDots.push(dot);
+    });
 
-        if (visible) {
-            visibleIndex++;
-            const expected = String(visibleIndex);
-            if (existing) {
-                if (existing.textContent !== expected) {
-                    existing.textContent = expected;
-                }
-            } else {
-                const span = document.createElement('span');
-                span.className = 'gic-page-number';
-                span.textContent = expected;
-                dot.appendChild(span);
-            }
-        } else {
+    const now = performance.now();
+
+    // ドット数の安定性検出
+    if (visibleDots.length !== _paginationSnapshot.count) {
+        _paginationSnapshot = { count: visibleDots.length, since: now, stable: false };
+    } else if (!_paginationSnapshot.stable && now - _paginationSnapshot.since >= PAGINATION_STABLE_DELAY_MS) {
+        _paginationSnapshot.stable = true;
+    }
+
+    // 不安定な間は番号を撤去
+    if (!_paginationSnapshot.stable) {
+        dots.forEach(dot => {
+            const existing = dot.querySelector('.gic-page-number');
             if (existing) existing.remove();
+        });
+        return;
+    }
+
+    // 安定 → 番号を適用（冪等）
+    visibleDots.forEach((dot, index) => {
+        const expected = String(index + 1);
+        const existing = dot.querySelector('.gic-page-number');
+        if (existing) {
+            if (existing.textContent !== expected) existing.textContent = expected;
+        } else {
+            const span = document.createElement('span');
+            span.className = 'gic-page-number';
+            span.textContent = expected;
+            dot.appendChild(span);
         }
+    });
+
+    // 非可視ドットに残った番号は撤去
+    dots.forEach(dot => {
+        if (visibleDots.includes(dot)) return;
+        const existing = dot.querySelector('.gic-page-number');
+        if (existing) existing.remove();
     });
 }
 
@@ -731,7 +767,6 @@ function applyGalleryLayout() {
 
         applyPageNumbers();
 
-        // アップロードメッセージを非表示
         hideGalleryUploadMessage();
 
         const previews = getAllPreviews();
@@ -785,7 +820,6 @@ function setupGalleryObserverForGic() {
     setInterval(() => {
         syncGalleryButtonVisibility();
         applyGalleryLayout();
-        // ★ ギャラリーが閉じていても、toastrなどページ最上位のメッセージは消す
         hideGalleryUploadMessage();
     }, 300);
 
@@ -885,10 +919,85 @@ function closeGalleryProgrammatically() {
     }
 }
 
+// ===== ギャラリー画像のプリロード =====
+
+/**
+ * ギャラリー内の全画像をブラウザキャッシュにロードする。
+ * ギャラリーを開いた状態で呼び出す前提。
+ * 画像URLはDOM (img要素) や data-src から収集する。
+ */
+async function preloadGalleryImages(timeoutMs = GALLERY_WARMUP_PRELOAD_TIMEOUT_MS) {
+    const galleryEl = document.getElementById('gallery');
+    if (!galleryEl) {
+        console.warn('[GIC] 🔥 プリロード: #gallery が見つかりません');
+        return 0;
+    }
+
+    const urls = new Set();
+    const collectUrls = () => {
+        galleryEl.querySelectorAll('img').forEach(img => {
+            if (img.src && img.src.startsWith('http')) urls.add(img.src);
+            if (img.dataset && img.dataset.src) urls.add(img.dataset.src);
+        });
+    };
+
+    // 初回収集
+    collectUrls();
+
+    // 画像がまだ無ければ、DOM が描画されるのを少し待つ
+    if (urls.size === 0) {
+        for (let i = 0; i < 5 && urls.size === 0; i++) {
+            await new Promise(r => setTimeout(r, 300));
+            collectUrls();
+        }
+    }
+
+    if (urls.size === 0) {
+        console.warn('[GIC] 🔥 プリロード: 画像URLが1つも見つかりませんでした');
+        return 0;
+    }
+
+    console.log(`[GIC] 🔥 プリロード開始: ${urls.size} 件`);
+
+    // 既にブラウザキャッシュにあるかどうかを問わず、Image()で読み込みを促す
+    // （未キャッシュならネットワーク取得、キャッシュ済みなら即完了）
+    let loaded = 0;
+    const startTime = performance.now();
+
+    const promises = [...urls].map(url => new Promise(resolve => {
+        const img = new Image();
+        const timer = setTimeout(() => {
+            resolve();
+        }, timeoutMs);
+
+        img.onload = () => {
+            clearTimeout(timer);
+            loaded++;
+            resolve();
+        };
+        img.onerror = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        img.src = url;
+    }));
+
+    // 全体タイムアウト
+    await Promise.race([
+        Promise.all(promises),
+        new Promise(r => setTimeout(r, timeoutMs)),
+    ]);
+
+    const elapsed = Math.round(performance.now() - startTime);
+    console.log(`[GIC] 🔥 プリロード完了: ${loaded}/${urls.size} 件 (${elapsed}ms)`);
+
+    return loaded;
+}
+
 // ===== ギャラリーのウォームアップ =====
 
 /**
- * 起動時にギャラリーを1度だけ開いて画像を読み込ませる。
+ * 起動時にギャラリーを1度だけ開き、全画像をブラウザキャッシュに載せる。
  * これにより、ユーザーが初めてギャラリーを開く時の遅延を解消する。
  * ユーザーが先に操作した場合は中断する。
  */
@@ -917,7 +1026,7 @@ async function warmUpGallery() {
     `;
     document.head.appendChild(hideStyle);
 
-    const startTime = Date.now();
+    const startTime = performance.now();
 
     try {
         const opened = openGalleryFromGic();
@@ -928,10 +1037,32 @@ async function warmUpGallery() {
             return;
         }
 
-        await new Promise(r => setTimeout(r, GALLERY_WARMUP_HOLD_MS));
+        // ギャラリーDOMが描画されるのを待つ
+        await new Promise(r => setTimeout(r, GALLERY_WARMUP_RENDER_WAIT_MS));
 
         if (warmupState === 'aborted') {
             console.log('[GIC] 🔥 ウォームアップはユーザー操作により中断されました');
+            hideStyle.remove();
+            return;
+        }
+
+        // ★ 画像を明示的にプリロード（ブラウザキャッシュに載せる）
+        await preloadGalleryImages();
+
+        if (warmupState === 'aborted') {
+            console.log('[GIC] 🔥 ウォームアップはユーザー操作により中断されました');
+            hideStyle.remove();
+            return;
+        }
+
+        // 最低保持時間まで待つ
+        const elapsed = performance.now() - startTime;
+        const remaining = GALLERY_WARMUP_HOLD_MS - elapsed;
+        if (remaining > 0) {
+            await new Promise(r => setTimeout(r, remaining));
+        }
+
+        if (warmupState === 'aborted') {
             hideStyle.remove();
             return;
         }
@@ -940,12 +1071,11 @@ async function warmUpGallery() {
 
         setTimeout(() => {
             hideStyle.remove();
-            // ウォームアップ中に出た toastr メッセージをここで再度消す
             hideGalleryUploadMessage();
         }, 500);
 
         warmupState = 'done';
-        console.log(`[GIC] 🔥 ウォームアップ完了 (${Date.now() - startTime}ms)`);
+        console.log(`[GIC] 🔥 ウォームアップ完了 (${Math.round(performance.now() - startTime)}ms)`);
     } catch (e) {
         console.warn('[GIC] 🔥 ウォームアップ中にエラー:', e);
         warmupState = 'idle';
@@ -1104,7 +1234,6 @@ function createGalleryButton() {
         lastActionTime = now;
         console.log(`[GIC] ギャラリーボタントリガー: ${source}`);
 
-        // ★ ユーザーが操作した → ウォームアップを中断
         if (warmupState === 'running') {
             warmupState = 'aborted';
             const hs = document.getElementById('gic-gallery-warmup-hide');
@@ -1171,7 +1300,7 @@ function initializeGIC() {
         markGeneratedMessagesInDom();
         positionGalleryButton();
         applyGalleryLayout();
-        hideGalleryUploadMessage();   // ★ 追加
+        hideGalleryUploadMessage();
     }, 1500);
 
     scanForGeneratedImages();
