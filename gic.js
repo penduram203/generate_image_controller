@@ -38,7 +38,7 @@ const GALLERY_PAGINATION_HEIGHT = 40;
  * 起動後、ギャラリーのウォームアップを開始するまでの待機時間(ms)。
  * ST 本体や他拡張の初期化が終わった頃に実行する。
  */
-const GALLERY_WARMUP_DELAY_MS = 8000;
+const GALLERY_WARMUP_DELAY_MS = 2000;
 
 /**
  * ウォームアップでギャラリーを開いておく時間(ms)。
