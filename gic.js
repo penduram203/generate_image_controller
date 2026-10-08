@@ -496,7 +496,7 @@ function styleGalleryWindowCloseButton() {
 
         btn.style.setProperty('position', 'fixed', 'important');
         btn.style.setProperty('right', '0', 'important');
-        btn.style.setProperty('bottom', '40px', 'important');
+        btn.style.setProperty('bottom', '25px', 'important');
         btn.style.setProperty('top', 'auto', 'important');
         btn.style.setProperty('left', 'auto', 'important');
         btn.style.setProperty(
