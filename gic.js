@@ -30,6 +30,9 @@ const GALLERY_PREVIEW_SCALE_MULTIPLIER = 1.0;
 const GALLERY_PREVIEW_MAX_WIDTH = 1440;
 const GALLERY_PREVIEW_CLOSE_SCALE = 2.5;
 
+// ★ ギャラリーウィンドウ本体の閉じるボタンの拡大倍率
+const GALLERY_WINDOW_CLOSE_SCALE = 2.5;
+
 const GALLERY_WINDOW_HEIGHT_DELTA = 600;
 const GALLERY_WINDOW_MAX_VIEWPORT_MARGIN = 20;
 const GALLERY_PAGINATION_HEIGHT = 40;
@@ -107,9 +110,7 @@ function savePersistedState() {
     const closeHoverSel = GALLERY_PREVIEW_SELECTORS.map(s => `${s}:hover .dragClose`).join(', ');
 
     style.textContent = `
-        /* プレビューパネル
-         * transform が当たっているため、この要素が position: fixed 子要素の
-         * containing block になる。よって .dragClose は left:0 でパネル左端を指す。 */
+        /* プレビューパネル */
         ${panelSel} {
             position: fixed !important;
             top: 50% !important;
@@ -122,9 +123,7 @@ function savePersistedState() {
             visibility: hidden !important;
         }
 
-        /* 閉じるボタン: 通常は非表示
-         * - position: fixed だが、transform 祖先（パネル）が containing block になる
-         * - そのため left/top はパネル基準で指定する（ビューポート座標は使わない） */
+        /* プレビューの閉じるボタン: 通常は非表示、パネルにホバーで表示 */
         ${closeSel} {
             position: fixed !important;
             left: 0 !important;
@@ -480,6 +479,38 @@ function closeAllPreviews() {
     console.log(`[GIC] ギャラリーが閉じたため ${previews.length} 個のプレビューを閉じました`);
 }
 
+/**
+ * ギャラリーウィンドウ本体の閉じるボタンを右下に移動し、2.5倍に拡大する。
+ * - プレビュー用 (.galleryImageDraggable 内) の .dragClose は除外する
+ * - #gallery が transform を持つため、position: fixed の子は #gallery 基準で配置される
+ *   → right: 0; bottom: 0 でギャラリーの右下に張り付く
+ */
+function styleGalleryWindowCloseButton() {
+    const galleryEl = document.getElementById('gallery');
+    if (!galleryEl) return;
+
+    const closeButtons = galleryEl.querySelectorAll('.dragClose');
+    closeButtons.forEach(btn => {
+        // プレビュー（.galleryImageDraggable 内）の閉じるボタンは除外
+        if (btn.closest('.galleryImageDraggable')) return;
+
+        btn.style.setProperty('position', 'fixed', 'important');
+        btn.style.setProperty('right', '0', 'important');
+        btn.style.setProperty('bottom', '0', 'important');
+        btn.style.setProperty('top', 'auto', 'important');
+        btn.style.setProperty('left', 'auto', 'important');
+        btn.style.setProperty(
+            'transform',
+            `scale(${GALLERY_WINDOW_CLOSE_SCALE})`,
+            'important'
+        );
+        btn.style.setProperty('transform-origin', 'bottom right', 'important');
+        btn.style.setProperty('z-index', '100', 'important');
+        btn.style.setProperty('margin', '0', 'important');
+        btn.style.setProperty('pointer-events', 'auto', 'important');
+    });
+}
+
 function hideGalleryUploadMessage() {
     const messages = [
         'Drag and drop images onto the gallery',
@@ -702,10 +733,7 @@ function fitPreviewToViewport(panel) {
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('flex', '0 0 auto', 'important');
 
-        // ★ 閉じるボタンはパネル基準で配置する。
-        //   パネルに transform が当たっているため、その子孫である
-        //   .dragClose の position: fixed はパネルを containing block とする。
-        //   したがって left/top はパネル内座標で指定する（ビューポート座標ではない）。
+        // プレビューの閉じるボタンはパネル基準で配置（既存処理）
         if (closeBtn) {
             closeBtn.style.setProperty('position', 'fixed', 'important');
             closeBtn.style.setProperty('left', '0', 'important');
@@ -744,6 +772,9 @@ function applyGalleryLayout() {
         }
 
         applyGalleryWindowLayout();
+
+        // ★ ギャラリー本体の閉じるボタンを右下へ移動 + 2.5倍
+        styleGalleryWindowCloseButton();
 
         document.querySelectorAll(
             '.nGY2paginationRectangle, .nGY2paginationRectangleCurrentPage'
